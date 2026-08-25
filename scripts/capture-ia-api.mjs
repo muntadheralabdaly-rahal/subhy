@@ -8,9 +8,11 @@
  * purchase) can be reconciled against ground truth.
  *
  * Run it on a machine that can actually reach the airline (it is blocked from
- * the Claude Code remote sandbox by egress policy):
+ * the Claude Code remote sandbox by egress policy). Playwright is not a
+ * dependency of this project - install it on demand:
  *
- *   npx playwright install chromium      # first run only
+ *   npm i -D playwright                  # the package
+ *   npx playwright install chromium      # the browser it drives
  *   node scripts/capture-ia-api.mjs --headed
  *
  * It opens the engine, then hands you the browser: click through search ->

@@ -5,6 +5,8 @@
  * Needs a device token captured from a real browser session. Get one with:
  *   node scripts/capture-ia-api.mjs --headed     # writes capture/tokens.txt
  *
+ * This script itself has no dependencies - plain node fetch.
+ *
  * Then:
  *   export IA_D_TOKEN=...            # required, from capture/tokens.txt
  *   export IA_CLIENT_ID=...          # booking SPA client id

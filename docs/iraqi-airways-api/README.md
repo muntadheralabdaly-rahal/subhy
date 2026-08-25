@@ -49,7 +49,8 @@ The airline's hosts are blocked from the Claude Code remote sandbox by egress
 policy, so the live walkthrough has to happen on a machine that can reach them:
 
 ```sh
-npx playwright install chromium     # first run only
+npm i -D playwright                 # not a project dependency; install on demand
+npx playwright install chromium     # the browser Playwright drives
 node scripts/capture-ia-api.mjs --headed
 ```
 
@@ -91,6 +92,20 @@ header.
 
 The token dies with the browser session it came from. A `403`, or a non-JSON
 response body, means re-capture it.
+
+### If a script will not start
+
+`Cannot find module .../scripts/capture-ia-api.mjs` means you are on another
+branch — these scripts live on the branch that introduced them:
+
+```sh
+git fetch origin claude/iraqi-airways-api-swagger-g1s3v4
+git checkout claude/iraqi-airways-api-swagger-g1s3v4
+```
+
+`Cannot find package 'playwright'` means the package is missing: run
+`npm i -D playwright`. `npx playwright install` only fetches browsers, not the
+package itself. `scripts/ia-search.mjs` has no dependencies and needs neither.
 
 ### If the install or dev server misbehaves
 
