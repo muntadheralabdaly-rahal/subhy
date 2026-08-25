@@ -32,12 +32,25 @@ import { chromium } from "playwright";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 
-const START = "https://online.iraqiairways.com.iq/";
-const OUT = "capture";
+const START = process.env["IA_CAPTURE_START"] ?? "https://online.iraqiairways.com.iq/";
+const OUT = process.env["IA_CAPTURE_OUT"] ?? "capture";
 const HEADED = process.argv.includes("--headed");
 
-/** Hosts whose traffic is part of the booking API surface. */
-const INTERESTING = [/iraqiairways\.com\.iq/, /payment\.amadeus\.com/, /amadeus\.(net|com)/];
+/**
+ * Finish without waiting for Enter, after N seconds. Lets the harness run
+ * unattended (CI, or a smoke test against a mock engine).
+ */
+const secondsArg = process.argv.find((a) => a.startsWith("--seconds="));
+const SECONDS = secondsArg ? Number(secondsArg.split("=")[1]) : null;
+
+/**
+ * Hosts whose traffic is part of the booking API surface. Override with
+ * IA_CAPTURE_HOSTS (comma-separated regex sources) to point the harness at a
+ * staging or mock engine.
+ */
+const INTERESTING = process.env["IA_CAPTURE_HOSTS"]
+  ? process.env["IA_CAPTURE_HOSTS"].split(",").map((h) => new RegExp(h.trim()))
+  : [/iraqiairways\.com\.iq/, /payment\.amadeus\.com/, /amadeus\.(net|com)/];
 const SECRET_KEYS = /^(pan|cvv|cardnumber|securitycode)$/i;
 
 /** Strips card data out of a JSON-ish body before it touches disk. */
@@ -65,7 +78,16 @@ const tokens = { dToken: null, bearer: null, ppid: null };
 
 await mkdir(OUT, { recursive: true });
 
-const browser = await chromium.launch({ headless: !HEADED });
+/**
+ * Escape hatch for environments whose Chromium is not the build this
+ * Playwright expects (a system Chromium, or a preinstalled sandbox one):
+ * IA_CAPTURE_CHROMIUM=/path/to/chrome
+ */
+const executablePath = process.env["IA_CAPTURE_CHROMIUM"];
+const browser = await chromium.launch({
+  headless: !HEADED,
+  ...(executablePath ? { executablePath } : {}),
+});
 const context = await browser.newContext({
   recordHar: { path: `${OUT}/session.har`, content: "embed" },
   locale: "en-GB",
@@ -113,7 +135,11 @@ const page = await context.newPage();
 console.log(`Opening ${START} ...`);
 await page.goto(START, { waitUntil: "domcontentloaded", timeout: 120_000 });
 
-console.log(`
+if (SECONDS) {
+  console.log(`\nRecording unattended for ${SECONDS}s ...`);
+  await page.waitForTimeout(SECONDS * 1000);
+} else {
+  console.log(`
 Browser is yours. Walk the full flow:
   1. search        pick route + dates, submit
   2. results       let the fare strip / calendar load
@@ -123,13 +149,14 @@ Browser is yours. Walk the full flow:
 
 Press Enter here when done.`);
 
-await new Promise((resolve) => {
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  rl.question("", () => {
-    rl.close();
-    resolve();
+  await new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question("", () => {
+      rl.close();
+      resolve();
+    });
   });
-});
+}
 
 await context.close();
 await browser.close();
