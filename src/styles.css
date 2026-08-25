@@ -1,0 +1,287 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Rahal design system.
+ * One green family on white. Exact hex values come from the Rahal identity
+ * system (references/color.md), so they are kept verbatim rather than
+ * converted, because the rendered value is the spec.
+ */
+
+@theme inline {
+  --font-sans: var(--font-rahal);
+  --font-sans-input: var(--font-input);
+
+  /* Radius scale from the design system (8 / 12 / 16 / 20 / 24). */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-3xl: 20px;
+  --radius-4xl: 24px;
+
+  /* Type scale from the design system. */
+  --text-heading-h1: 48px;
+  --text-heading-h1--line-height: 72px;
+  --text-heading-h2: 32px;
+  --text-heading-h2--line-height: 48px;
+  --text-heading-h2--letter-spacing: 0.25px;
+  --text-heading-h3: 24px;
+  --text-heading-h3--line-height: 36px;
+  --text-heading-h4: 20px;
+  --text-heading-h4--line-height: 32px;
+  --text-xl: 20px;
+  --text-xl--line-height: 32px;
+  --text-lg: 18px;
+  --text-lg--line-height: 28px;
+  --text-base: 16px;
+  --text-base--line-height: 24px;
+  --text-sm: 14px;
+  --text-sm--line-height: 18px;
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-xxs: 10px;
+  --text-xxs--line-height: 14px;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+
+  /* Surfaces */
+  --color-surface-background: #f5f6f5;
+  --color-surface-base-light: #ffffff;
+  --color-surface-accent-softer: #e5ffe4;
+  --color-surface-accent-soft: #a7fdc3;
+  --color-surface-accent-medium: #00ff99;
+  --color-surface-accent-strong: #295942;
+  --color-surface-accent-stronger: #003e2b;
+  --color-surface-pressed-accent-strong: #30684b;
+  --color-surface-neutral-soft: #f8f8f8;
+  --color-surface-neutral-medium: #eaeaeb;
+  --color-surface-neutral-strong: #96979a;
+  --color-surface-neutral-stronger: #3b3c3d;
+  --color-surface-disabled-base: #f7f7f7;
+  --color-surface-disabled-accent-strong: #bdbdbd;
+
+  /* Text */
+  --color-text-title: #131313;
+  --color-text-primary: #28292a;
+  --color-text-label: #28292a;
+  --color-text-secondary: #4f5052;
+  --color-text-tertiary: #67696b;
+  --color-text-placeholder: #757779;
+  --color-text-interactive: #003e2b;
+  --color-text-inverted: #ffffff;
+  --color-text-disabled-placeholder: #d2d2d4;
+  --color-text-disabled-interactive: #bbbcbe;
+
+  /* Stroke */
+  --color-stroke-neutral-softer: #f8f8f8;
+  --color-stroke-neutral-soft: #eaeaeb;
+  --color-stroke-neutral-medium: #bbbcbe;
+  --color-stroke-neutral-strong: #96979a;
+  --color-stroke-interactive-strong: #003e2b;
+
+  /* Semantic */
+  --color-semantic-error-soft: #fff8f6;
+  --color-semantic-error-medium: #fec7b2;
+  --color-semantic-error-strong: #de370c;
+  --color-semantic-error-pressed-strong: #c63009;
+  --color-semantic-warning-soft: #fff9da;
+  --color-semantic-warning-medium: #f5d034;
+  --color-semantic-warning-strong: #987000;
+  --color-semantic-warning-pressed-strong: #896200;
+  --color-semantic-success-soft: #f2fafd;
+  --color-semantic-success-strong: #2e8285;
+  --color-semantic-success-pressed-strong: #207476;
+
+  /* Core Rahal greens */
+  --color-core-rahal-100: #e5ffe4;
+  --color-core-rahal-200: #a7fdc3;
+  --color-core-rahal-300: #6ef2a3;
+  --color-core-rahal-400: #37d986;
+  --color-core-rahal-500: #14b26a;
+  --color-core-rahal-600: #0b8757;
+  --color-core-rahal-700: #0a6a46;
+  --color-core-rahal-800: #095a3d;
+  --color-core-rahal-900: #003e2b;
+  --color-core-rahal-1000: #094b34;
+
+  --color-whatsapp-green: #40c351;
+
+  /* Legacy aliases kept so existing screens inherit the new palette. */
+  --color-brand: #003e2b;
+  --color-brand-deep: #002b1e;
+  --color-brand-panel: #295942;
+  --color-brand-mid: #003e2b;
+  --color-brand-mid-hover: #30684b;
+  --color-mint: #00ff99;
+  --color-green-muted: #67696b;
+  --color-ink: #28292a;
+  --color-surface-light: #f5f6f5;
+  --color-surface-lighter: #ffffff;
+  --color-surface-page: #f5f6f5;
+  --color-hairline: #eaeaeb;
+
+  --color-chart-1: #003e2b;
+  --color-chart-2: #0b8757;
+  --color-chart-3: #37d986;
+  --color-chart-4: #00ff99;
+  --color-chart-5: #295942;
+
+  --ease-rahal: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --spacing-main: 16px;
+}
+
+:root {
+  --font-rahal:
+    "IBM Plex Sans Arabic", "Noto Sans Arabic", "Segoe UI", Tahoma, system-ui, sans-serif;
+  --font-input: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  --radius: 16px;
+  --background: #f5f6f5;
+  --foreground: #28292a;
+  --card: #ffffff;
+  --card-foreground: #28292a;
+  --popover: #ffffff;
+  --popover-foreground: #28292a;
+  --primary: #003e2b;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f6f5;
+  --secondary-foreground: #003e2b;
+  --muted: #f5f6f5;
+  --muted-foreground: #67696b;
+  --accent: #e5ffe4;
+  --accent-foreground: #003e2b;
+  --destructive: #de370c;
+  --destructive-foreground: #ffffff;
+  --border: #eaeaeb;
+  --input: #eaeaeb;
+  --ring: #003e2b;
+}
+
+html,
+body,
+button,
+input,
+select,
+textarea,
+optgroup,
+*,
+*::before,
+*::after,
+::placeholder,
+::file-selector-button {
+  font-family: var(--font-rahal);
+}
+
+/* Latin passport / card fields stay on a neutral face. */
+.font-sans-input,
+.font-sans-input::placeholder {
+  font-family: var(--font-input);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Cursive scripts break apart when letter-spacing is applied. */
+  [dir="rtl"] * {
+    letter-spacing: normal !important;
+  }
+
+  /* Autofill repaint to the current field surface. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-text-fill-color: #28292a;
+    -webkit-box-shadow: 0 0 0 1000px #ffffff inset;
+    caret-color: #28292a;
+  }
+}
+
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@utility glass {
+  background-color: color-mix(in srgb, #ffffff 10%, transparent);
+  backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in srgb, #ffffff 20%, transparent);
+}
+
+/* Design-system building blocks. */
+@utility px-main {
+  padding-inline: var(--spacing-main);
+}
+
+@utility section-card {
+  background-color: #ffffff;
+  border-radius: var(--radius-4xl);
+  padding: 16px;
+}
+
+@utility page-title {
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+  font-weight: 600;
+  color: var(--color-text-title);
+}
+
+@utility section-title {
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+@utility click-animate {
+  transition: transform 150ms var(--ease-rahal);
+  &:active {
+    transform: scale(0.95);
+  }
+}
+
+@keyframes rahal-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
