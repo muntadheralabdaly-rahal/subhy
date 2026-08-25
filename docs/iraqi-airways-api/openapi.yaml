@@ -1,0 +1,1026 @@
+openapi: 3.0.3
+info:
+  title: Iraqi Airways booking engine (unofficial)
+  version: "1.0.0"
+  description: |
+    Unofficial OpenAPI description of the private APIs behind the Iraqi Airways
+    online booking engine at `https://online.iraqiairways.com.iq` (the marketing
+    site `https://www.iraqiairways.com.iq` links out to it).
+
+    The engine is **Amadeus Digital Experience Suite (Digital Commerce)**. It is a
+    REST/JSON retailing API: search -> cart -> travelers -> services -> purchase,
+    with card capture handed off to **Amadeus Checkout** on a separate host.
+    Iraqi Airways publishes no third-party API; everything here was derived from
+    the browser traffic of the engine itself.
+
+    ## Verification status
+    Every operation carries an `x-verification` extension:
+
+      * `verified`   - path, headers, request body and response mapping are
+                       implemented and exercised in this repository
+                       (`src/services/ia.server.ts`, `src/services/amadeusPay.server.ts`).
+      * `unverified`  - the step exists in the UI flow, and the path/shape follows
+                       the Amadeus Digital Commerce convention, but it has NOT been
+                       confirmed against a live capture. Treat as a template:
+                       run `scripts/capture-ia-api.mjs` against the live site and
+                       reconcile before relying on it.
+
+    ## Edge protection
+    The airline edge sits behind **Imperva**. Every call needs a device token
+    (`x-d-token`) minted by a real browser session, plus browser-like `origin`,
+    `referer` and `user-agent`. When the device token goes stale the edge answers
+    `403` with a non-JSON challenge body rather than a JSON error.
+
+    ## Money
+    Amounts are integers scaled by `dictionaries.currency[<code>].decimalPlaces`.
+    IQD has 0 decimal places, so `total: 425000` is 425,000 IQD. Always divide by
+    `10 ** decimalPlaces` - do not assume 2.
+  x-source-of-truth: src/services/ia.server.ts, src/services/amadeusPay.server.ts
+
+servers:
+  - url: https://api-des.iraqiairways.com.iq
+    description: Airline gateway (Amadeus DES). Override with IA_API_BASE.
+  - url: https://paypages.payment.amadeus.com
+    description: Amadeus Checkout payment pages host.
+
+tags:
+  - name: Security
+    description: OAuth2 token minting.
+  - name: Search
+    description: Availability and fare calendar (step 1 - search & shopping list).
+  - name: Shopping
+    description: Cart, baggage, seats, ancillaries (steps 2-4 - pick flight, travelers).
+  - name: Booking
+    description: Purchase and order retrieval.
+  - name: Payment
+    description: Amadeus Checkout card + OTP/3DS (step 5 - handle payment).
+
+security:
+  - bearerAuth: []
+  - deviceToken: []
+
+paths:
+
+  # ---------------------------------------------------------------- Security
+  /v1/security/oauth2/token/initialization:
+    post:
+      tags: [Security]
+      summary: Mint an access token
+      operationId: initializeToken
+      x-verification: verified
+      description: |
+        Client-credentials grant using the booking SPA's own public client id and
+        secret. `fact` is mandatory - the gateway rejects the request without it -
+        but may be the empty JSON object `{}`.
+
+        Tokens are short-lived (`expires_in`, typically 1800s). Cache and re-mint
+        shortly before expiry; on a `401` from any other endpoint, drop the cache
+        and mint once more before failing.
+      security:
+        - deviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [client_id, client_secret, grant_type, fact]
+              properties:
+                client_id:
+                  type: string
+                  description: Public client id of the booking engine (env IA_CLIENT_ID).
+                client_secret:
+                  type: string
+                  description: Matching secret (env IA_CLIENT_SECRET).
+                grant_type:
+                  type: string
+                  enum: [client_credentials]
+                fact:
+                  type: string
+                  description: JSON-encoded context object. `{}` is accepted.
+                  example: "{}"
+      responses:
+        "200":
+          description: Token minted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, example: Bearer }
+                  expires_in: { type: integer, example: 1800 }
+              example:
+                access_token: "eyJhbGciOi..."
+                token_type: Bearer
+                expires_in: 1800
+        "403":
+          $ref: "#/components/responses/ImpervaChallenge"
+
+  # ------------------------------------------------------------------ Search
+  /v2/search/air-bounds:
+    post:
+      tags: [Search]
+      summary: Flight availability (the shopping list)
+      operationId: searchAirBounds
+      x-verification: verified
+      description: |
+        Step 1 of the flow. Returns priced `airBoundGroups` - one group per
+        itinerary/bound, each holding one `airBounds` entry per fare family.
+
+        Responses are **dictionary-compressed**: `data` references flights and
+        fare families by id, and the actual objects live under `dictionaries`.
+        Resolve `boundDetails.segments[].flightId` against `dictionaries.flight`
+        and `airBounds[].fareFamilyCode` against
+        `dictionaries.fareFamilyWithServices`.
+
+        An empty result is reported as an **error object**, not an empty array:
+        error code `7959` ("NO FLIGHTS FOUND") is a valid no-inventory answer and
+        should be surfaced as zero offers, not as a transport failure.
+
+        `airBounds[].airBoundId` is the handle you carry into cart creation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AirBoundsRequest" }
+            example:
+              commercialFareFamilies: ["eco"]
+              itineraries:
+                - departureDateTime: "2026-09-14T00:00:00.000"
+                  originLocationCode: BGW
+                  destinationLocationCode: DXB
+                  isRequestedBound: true
+                - departureDateTime: "2026-09-21T00:00:00.000"
+                  originLocationCode: DXB
+                  destinationLocationCode: BGW
+                  isRequestedBound: false
+              travelers:
+                - passengerTypeCode: ADT
+                - passengerTypeCode: CHD
+              searchPreferences:
+                showMilesPrice: false
+      responses:
+        "200":
+          description: Availability (may carry `errors` instead of `data`)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AirBoundsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ImpervaChallenge" }
+
+  /v2/search/air-calendars:
+    post:
+      tags: [Search]
+      summary: +/- N day fare spread (fare calendar strip)
+      operationId: searchAirCalendars
+      x-verification: verified
+      description: |
+        Same request shape as `/v2/search/air-bounds` plus `flexibility` on the
+        **requested bound only** - the gateway rejects `flexibility` on the
+        non-requested (return) bound.
+
+        Returns one cheapest price per departure date across the window.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AirCalendarsRequest" }
+            example:
+              commercialFareFamilies: ["eco"]
+              itineraries:
+                - departureDateTime: "2026-09-14T00:00:00.000"
+                  originLocationCode: BGW
+                  destinationLocationCode: DXB
+                  isRequestedBound: true
+                  flexibility: 3
+              travelers: [{ passengerTypeCode: ADT }]
+              searchPreferences: { showMilesPrice: false }
+      responses:
+        "200":
+          description: Fare calendar
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AirCalendarsResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ImpervaChallenge" }
+
+  # ---------------------------------------------------------------- Shopping
+  /v2/shopping/baggage-policies:
+    get:
+      tags: [Shopping]
+      summary: Free baggage allowance for a priced cart
+      operationId: getBaggagePolicies
+      x-verification: verified
+      description: |
+        The carrier's own free allowance for the flights in a cart - use this to
+        quote exact numbers on the selection screen instead of hardcoding
+        30/40 kg. Allowances are expressed either by `weight` (with `weightUnit`)
+        or by `piece`.
+      parameters:
+        - name: cartId
+          in: query
+          required: true
+          schema: { type: string }
+          description: Cart returned by cart creation.
+        - name: lang
+          in: query
+          required: false
+          schema: { type: string, default: "GB" }
+          description: Two-letter engine language/market code, e.g. `GB`.
+      responses:
+        "200":
+          description: Allowances
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BaggagePoliciesResponse" }
+              example:
+                data:
+                  policyRegulations: ["IATA RESO 302"]
+                  freeCheckedBaggageAllowance:
+                    - airlineCode: IA
+                      details: { type: weight, weightUnit: kilogram, quantity: 40 }
+                  freeCarryOnAllowance:
+                    - airlineCode: IA
+                      details: { type: piece, quantity: 1 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ImpervaChallenge" }
+
+  /v2/shopping/carts:
+    post:
+      tags: [Shopping]
+      summary: Create a cart from a selected air bound (pick flight)
+      operationId: createCart
+      x-verification: unverified
+      description: |
+        Step 2 of the flow. Exchanges one or more `airBoundId` values from
+        `/v2/search/air-bounds` for a server-side cart. The `cartId` is the
+        handle for every later step (baggage, travelers, services, purchase).
+
+        NOT yet confirmed against a live capture - confirm the exact body key
+        (`airBoundId` vs `airOffer`) and the response envelope before use.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                airBoundId:
+                  type: string
+                  description: Selected bound from the search response.
+                commercialFareFamilies:
+                  type: array
+                  items: { type: string }
+                travelers:
+                  type: array
+                  items: { $ref: "#/components/schemas/TravelerType" }
+      responses:
+        "200":
+          description: Cart created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ImpervaChallenge" }
+
+  /v2/shopping/carts/{cartId}:
+    get:
+      tags: [Shopping]
+      summary: Retrieve the current cart
+      operationId: getCart
+      x-verification: unverified
+      description: Re-reads cart contents, prices and selected services. Path unconfirmed.
+      parameters: [{ $ref: "#/components/parameters/CartId" }]
+      responses:
+        "200":
+          description: Cart
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v2/shopping/carts/{cartId}/travelers:
+    put:
+      tags: [Shopping]
+      summary: Attach traveler details to the cart (add traveler)
+      operationId: putCartTravelers
+      x-verification: unverified
+      description: |
+        Step 3 of the flow. Names, dates of birth, travel documents and contact
+        details for each passenger, keyed by the traveler ids the cart assigned.
+
+        For an international Iraqi Airways itinerary expect passport data
+        (`documents[].documentType: PASSPORT`, number, issuing country, expiry)
+        to be mandatory. Exact field names and required-ness are unconfirmed.
+      parameters: [{ $ref: "#/components/parameters/CartId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                travelers:
+                  type: array
+                  items: { $ref: "#/components/schemas/TravelerDetails" }
+                contact: { $ref: "#/components/schemas/Contact" }
+      responses:
+        "200":
+          description: Travelers stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v2/shopping/carts/{cartId}/air-offers/seat-maps:
+    get:
+      tags: [Shopping]
+      summary: Seat map for the cart's flights
+      operationId: getSeatMaps
+      x-verification: unverified
+      description: Cabin layout, seat characteristics and per-seat pricing. Path unconfirmed.
+      parameters: [{ $ref: "#/components/parameters/CartId" }]
+      responses:
+        "200":
+          description: Seat maps
+          content:
+            application/json:
+              schema: { type: object }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v2/shopping/carts/{cartId}/services:
+    post:
+      tags: [Shopping]
+      summary: Add ancillary services (extra bags, seats, meals)
+      operationId: addCartServices
+      x-verification: unverified
+      description: Adds priced ancillaries to the cart. Body shape unconfirmed.
+      parameters: [{ $ref: "#/components/parameters/CartId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                services:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      serviceId: { type: string }
+                      travelerId: { type: string }
+                      segmentId: { type: string }
+                      quantity: { type: integer }
+      responses:
+        "200":
+          description: Services added
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CartResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ----------------------------------------------------------------- Booking
+  /v2/shopping/carts/{cartId}/purchase:
+    post:
+      tags: [Booking]
+      summary: Convert the cart into a flight order (PNR)
+      operationId: purchaseCart
+      x-verification: unverified
+      description: |
+        Step 4 of the flow. Turns the priced, travelered cart into a booking and
+        returns the record locator plus - critically - the **PPID**, the Amadeus
+        Checkout payment-session id used by every call in the Payment section.
+
+        Whether the order is created before or after card capture, and whether
+        the PPID comes from this call or from a separate checkout-session call,
+        is unconfirmed. Capture this step first when reconciling.
+      parameters: [{ $ref: "#/components/parameters/CartId" }]
+      responses:
+        "200":
+          description: Order created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v2/booking/flight-orders/{orderId}:
+    get:
+      tags: [Booking]
+      summary: Retrieve a booking
+      operationId: getFlightOrder
+      x-verification: unverified
+      description: Reads back a booking by order id / record locator. Path unconfirmed.
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ----------------------------------------------------------------- Payment
+  /1ASIATP/ARIAPP/pay:
+    post:
+      tags: [Payment]
+      summary: Submit card details, or answer an OTP/3DS challenge
+      operationId: amadeusCheckoutPay
+      x-verification: verified
+      x-host: https://paypages.payment.amadeus.com
+      description: |
+        Step 5 of the flow, on the **Amadeus Checkout** host - not the airline
+        gateway. This is the endpoint the checkout SDK embedded in the booking
+        engine posts to. It is NOT bearer-authenticated: the `PPID` payment
+        session id is the credential.
+
+        Two actions on the same path:
+
+          * `action: "add"` - submit the card. Answers with either a final
+            status or an OTP / 3-D Secure challenge carrying a `reference`.
+          * `action: "authenticate"` - post the OTP back with that `reference`.
+
+        Note the unusual transport: `content-type: text/plain;charset=UTF-8`
+        with a JSON body, and `origin`/`referer` of
+        `https://prd.payment.amadeus.com`, not the airline domain. The
+        `amadeus-checkout-sdk-*` headers identify the embedding SDK build.
+
+        Iraqi issuers challenge by default, so treat an unrecognised status as
+        "OTP required" rather than as approved.
+
+        Card data is forwarded straight to Amadeus. Never log or persist a PAN
+        or CVV.
+      servers:
+        - url: https://paypages.payment.amadeus.com
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/SdkFlavor" }
+        - { $ref: "#/components/parameters/SdkHost" }
+        - { $ref: "#/components/parameters/SdkVersion" }
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              oneOf:
+                - $ref: "#/components/schemas/PayAddRequest"
+                - $ref: "#/components/schemas/PayAuthenticateRequest"
+            examples:
+              addCard:
+                summary: Submit card (action=add)
+                value:
+                  PPID: "a1b2c3d4e5f6"
+                  action: add
+                  data:
+                    mopid: creditcard
+                    mopdata:
+                      pan: "4111111111111111"
+                      CVV: "123"
+                      holdername: "AHMED ALI"
+                      expmonth: "07"
+                      expyear: "28"
+                      vendor: visa
+                      address:
+                        address_line1: Baghdad
+                        city: Baghdad
+                        country: IQ
+                        zipcode: "10001"
+              answerOtp:
+                summary: Answer the OTP (action=authenticate)
+                value:
+                  PPID: "a1b2c3d4e5f6"
+                  action: authenticate
+                  data:
+                    mopid: creditcard
+                    mopdata: { otp: "482913", reference: "TXN-9931" }
+      responses:
+        "200":
+          description: |
+            Gateway verdict. The status lives under whichever of `status`,
+            `state` or `action` the gateway populates - normalise across all
+            three, uppercase, and match on substrings (`OTP`, `CHALLENGE`,
+            `AUTHENTICATION` => challenge; `SUCCESS`, `APPROVED`, `AUTHORISED`
+            => approved). The reference likewise falls back across
+            `reference` -> `challenge.reference` -> `transactionId` -> `paymentId`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayResponse" }
+              examples:
+                challenge:
+                  value:
+                    status: AUTHENTICATION_REQUIRED
+                    challenge: { type: OTP, reference: "TXN-9931" }
+                    message: "Enter the code sent to your phone"
+                approved:
+                  value: { status: SUCCESS, reference: "TXN-9931" }
+                declined:
+                  value:
+                    errors: [{ title: "Payment refused", detail: "Do not honour" }]
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token from `/v1/security/oauth2/token/initialization`.
+    deviceToken:
+      type: apiKey
+      in: header
+      name: x-d-token
+      description: |
+        Imperva device token. Rotates with a real browser session and must be
+        refreshed by hand - there is no programmatic mint. Every airline-gateway
+        call requires it; a stale token yields `403` plus a non-JSON body.
+
+  parameters:
+    CartId:
+      name: cartId
+      in: path
+      required: true
+      schema: { type: string }
+    ClientRef:
+      name: ama-client-ref
+      in: header
+      required: false
+      schema: { type: string }
+      description: Per-request correlation id, formatted `<uuid>:0`.
+    SdkFlavor:
+      name: amadeus-checkout-sdk-flavor
+      in: header
+      required: true
+      schema: { type: string, example: Core-Sdk }
+    SdkHost:
+      name: amadeus-checkout-sdk-host
+      in: header
+      required: true
+      schema: { type: string, example: online.iraqiairways.com.iq }
+    SdkVersion:
+      name: amadeus-checkout-sdk-version
+      in: header
+      required: true
+      schema: { type: string, example: WEB/5.7.0/1cb83a3 }
+
+  responses:
+    Unauthorized:
+      description: Token expired or rejected. Re-mint once, then retry the call.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    BadRequest:
+      description: Validation failure.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorEnvelope" }
+    ImpervaChallenge:
+      description: |
+        Edge rejection. The body is an Imperva HTML challenge, not JSON - parse
+        defensively. Usually means `x-d-token` is stale and needs re-capture
+        from a browser session.
+      content:
+        text/html:
+          schema: { type: string }
+
+  schemas:
+
+    ErrorEnvelope:
+      type: object
+      properties:
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+                description: "`7959` = NO FLIGHTS FOUND (an empty result, not a failure)."
+              title: { type: string }
+              detail: { type: string }
+
+    TravelerType:
+      type: object
+      description: |
+        One entry per passenger - the array length is the passenger count. There
+        is no `quantity` field.
+      properties:
+        passengerTypeCode:
+          type: string
+          enum: [ADT, CHD, INF]
+          description: Adult, child, infant.
+
+    Itinerary:
+      type: object
+      required: [departureDateTime, originLocationCode, destinationLocationCode]
+      properties:
+        departureDateTime:
+          type: string
+          description: Local date at midnight, `YYYY-MM-DDT00:00:00.000` (no zone suffix).
+          example: "2026-09-14T00:00:00.000"
+        originLocationCode: { type: string, example: BGW }
+        destinationLocationCode: { type: string, example: DXB }
+        isRequestedBound:
+          type: boolean
+          description: "`true` for the outbound leg, `false` for the return."
+
+    SearchPreferences:
+      type: object
+      properties:
+        showMilesPrice: { type: boolean, default: false }
+
+    AirBoundsRequest:
+      type: object
+      required: [itineraries, travelers]
+      properties:
+        commercialFareFamilies:
+          type: array
+          description: |
+            Cabin family filter. Observed values: `eco`, `business`. Premium
+            economy maps onto `eco` and first onto `business` on this carrier.
+          items: { type: string, enum: [eco, business] }
+        itineraries:
+          type: array
+          items: { $ref: "#/components/schemas/Itinerary" }
+        travelers:
+          type: array
+          items: { $ref: "#/components/schemas/TravelerType" }
+        searchPreferences: { $ref: "#/components/schemas/SearchPreferences" }
+
+    AirCalendarsRequest:
+      allOf:
+        - $ref: "#/components/schemas/AirBoundsRequest"
+        - type: object
+          properties:
+            itineraries:
+              type: array
+              items:
+                allOf:
+                  - $ref: "#/components/schemas/Itinerary"
+                  - type: object
+                    properties:
+                      flexibility:
+                        type: integer
+                        description: |
+                          Days either side of `departureDateTime`. Allowed on the
+                          requested bound only - the gateway rejects it on the return.
+                        example: 3
+
+    Price:
+      type: object
+      properties:
+        base:
+          type: integer
+          description: Scaled by `dictionaries.currency[currencyCode].decimalPlaces`.
+        total: { type: integer }
+        totalTaxes: { type: integer }
+        currencyCode: { type: string, example: IQD }
+
+    AirBound:
+      type: object
+      properties:
+        airBoundId:
+          type: string
+          description: Handle carried into cart creation.
+        fareFamilyCode:
+          type: string
+          description: Key into `dictionaries.fareFamilyWithServices`.
+        isCheapestOffer: { type: boolean }
+        availabilityDetails:
+          type: array
+          items:
+            type: object
+            properties:
+              flightId: { type: string }
+              cabin: { type: string, example: eco }
+              quota:
+                type: integer
+                description: Seats left at this fare.
+        prices:
+          type: object
+          properties:
+            totalPrices:
+              type: array
+              items: { $ref: "#/components/schemas/Price" }
+
+    FlightDictionaryEntry:
+      type: object
+      properties:
+        marketingAirlineCode: { type: string, example: IA }
+        operatingAirlineCode: { type: string }
+        marketingFlightNumber: { type: string, example: "911" }
+        departure:
+          type: object
+          properties:
+            locationCode: { type: string }
+            dateTime: { type: string }
+        arrival:
+          type: object
+          properties:
+            locationCode: { type: string }
+            dateTime: { type: string }
+        aircraftCode: { type: string }
+        duration:
+          type: integer
+          description: Seconds, not minutes.
+
+    AirBoundsResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            airBoundGroups:
+              type: array
+              items:
+                type: object
+                properties:
+                  boundDetails:
+                    type: object
+                    properties:
+                      segments:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            flightId: { type: string }
+                      duration: { type: integer, description: Seconds. }
+                  airBounds:
+                    type: array
+                    items: { $ref: "#/components/schemas/AirBound" }
+        dictionaries: { $ref: "#/components/schemas/Dictionaries" }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              title: { type: string }
+              detail: { type: string }
+
+    Dictionaries:
+      type: object
+      properties:
+        flight:
+          type: object
+          additionalProperties: { $ref: "#/components/schemas/FlightDictionaryEntry" }
+        currency:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              decimalPlaces:
+                type: integer
+                description: "IQD is 0. Divide amounts by 10 ** decimalPlaces."
+        fareFamilyWithServices:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              cabin: { type: string, example: eco }
+              commercialFareFamily: { type: string }
+              fareFamilyName: { type: string }
+              services:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type: { type: string }
+                    code: { type: string }
+                    bookingInstruction:
+                      type: object
+                      properties: { text: { type: string } }
+                    allowance:
+                      type: object
+                      properties:
+                        quantity: { type: integer }
+                        unit: { type: string }
+                        type: { type: string }
+
+    AirCalendarsResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            airCalendars:
+              type: array
+              items:
+                type: object
+                properties:
+                  departureDateTime: { type: string }
+                  isCheapestOffer: { type: boolean }
+                  prices:
+                    type: object
+                    properties:
+                      totalPrices:
+                        type: array
+                        items: { $ref: "#/components/schemas/Price" }
+        dictionaries: { $ref: "#/components/schemas/Dictionaries" }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              title: { type: string }
+
+    BaggageAllowanceEntry:
+      type: object
+      properties:
+        airlineCode: { type: string, example: IA }
+        details:
+          type: object
+          properties:
+            type: { type: string, enum: [weight, piece] }
+            weightUnit: { type: string, enum: [kilogram, pound] }
+            quantity: { type: integer }
+
+    BaggagePoliciesResponse:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            policyRegulations:
+              type: array
+              items: { type: string }
+            freeCheckedBaggageAllowance:
+              type: array
+              items: { $ref: "#/components/schemas/BaggageAllowanceEntry" }
+            freeCarryOnAllowance:
+              type: array
+              items: { $ref: "#/components/schemas/BaggageAllowanceEntry" }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              code: { type: string }
+              title: { type: string }
+
+    TravelerDetails:
+      type: object
+      description: Shape unconfirmed - reconcile against a live capture.
+      properties:
+        id: { type: string }
+        passengerTypeCode: { type: string, enum: [ADT, CHD, INF] }
+        name:
+          type: object
+          properties:
+            firstName: { type: string }
+            lastName: { type: string }
+            title: { type: string, example: MR }
+        dateOfBirth: { type: string, format: date }
+        gender: { type: string, enum: [MALE, FEMALE] }
+        documents:
+          type: array
+          items:
+            type: object
+            properties:
+              documentType: { type: string, example: PASSPORT }
+              number: { type: string }
+              issuanceCountry: { type: string, example: IQ }
+              nationality: { type: string, example: IQ }
+              expiryDate: { type: string, format: date }
+        contact: { $ref: "#/components/schemas/Contact" }
+
+    Contact:
+      type: object
+      properties:
+        emailAddress: { type: string, format: email }
+        phones:
+          type: array
+          items:
+            type: object
+            properties:
+              countryCallingCode: { type: string, example: "964" }
+              number: { type: string }
+
+    CartResponse:
+      type: object
+      description: Shape unconfirmed.
+      properties:
+        data:
+          type: object
+          properties:
+            cartId: { type: string }
+            airOffers:
+              type: array
+              items: { type: object }
+            travelers:
+              type: array
+              items: { $ref: "#/components/schemas/TravelerDetails" }
+            prices:
+              type: object
+              properties:
+                totalPrices:
+                  type: array
+                  items: { $ref: "#/components/schemas/Price" }
+        dictionaries: { $ref: "#/components/schemas/Dictionaries" }
+
+    OrderResponse:
+      type: object
+      description: Shape unconfirmed.
+      properties:
+        data:
+          type: object
+          properties:
+            orderId: { type: string }
+            recordLocator:
+              type: string
+              description: Six-character PNR.
+              example: X7K2QP
+            status: { type: string }
+            ppid:
+              type: string
+              description: Amadeus Checkout payment session id, used by /1ASIATP/ARIAPP/pay.
+            prices:
+              type: object
+              properties:
+                totalPrices:
+                  type: array
+                  items: { $ref: "#/components/schemas/Price" }
+
+    CardAddress:
+      type: object
+      properties:
+        address_line1: { type: string }
+        city: { type: string }
+        country: { type: string, description: ISO 3166-1 alpha-2., example: IQ }
+        zipcode: { type: string }
+
+    PayAddRequest:
+      type: object
+      required: [PPID, data, action]
+      properties:
+        PPID:
+          type: string
+          description: Payment session id minted by the airline checkout session.
+        action: { type: string, enum: [add] }
+        data:
+          type: object
+          properties:
+            mopid: { type: string, enum: [creditcard] }
+            mopdata:
+              type: object
+              properties:
+                pan: { type: string, description: 12-19 digits. Never log or persist. }
+                CVV: { type: string, description: 3-4 digits. Never log or persist. }
+                holdername: { type: string }
+                expmonth: { type: string, description: Two digits., example: "07" }
+                expyear: { type: string, description: Two digits., example: "28" }
+                vendor: { type: string, enum: [visa, mastercard, amex, unknown] }
+                address: { $ref: "#/components/schemas/CardAddress" }
+                tdsSessionId:
+                  type: string
+                  description: 3-D Secure device fingerprint session, when the SDK produced one.
+
+    PayAuthenticateRequest:
+      type: object
+      required: [PPID, data, action]
+      properties:
+        PPID: { type: string }
+        action: { type: string, enum: [authenticate] }
+        data:
+          type: object
+          properties:
+            mopid: { type: string, enum: [creditcard] }
+            mopdata:
+              type: object
+              properties:
+                otp: { type: string, description: 4-8 digits. }
+                reference:
+                  type: string
+                  description: Challenge reference from the preceding `add` response.
+
+    PayResponse:
+      type: object
+      description: |
+        The gateway is inconsistent about which fields it populates - read all
+        the status and reference aliases below rather than any single one.
+      properties:
+        status: { type: string }
+        state: { type: string }
+        action: { type: string }
+        reference: { type: string }
+        transactionId: { type: string }
+        paymentId: { type: string }
+        challenge:
+          type: object
+          properties:
+            type: { type: string, example: OTP }
+            reference: { type: string }
+        message: { type: string }
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              detail: { type: string }

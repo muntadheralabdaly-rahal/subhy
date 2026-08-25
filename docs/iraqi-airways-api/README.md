@@ -1,0 +1,95 @@
+# Iraqi Airways booking API
+
+`openapi.yaml` in this folder is an unofficial OpenAPI 3.0.3 description of the
+private APIs behind the Iraqi Airways online booking engine.
+
+## What the platform actually is
+
+`www.iraqiairways.com.iq` is a marketing site. Booking is handed off to
+`online.iraqiairways.com.iq`, a **Amadeus Digital Experience Suite (Digital
+Commerce)** deployment, which talks to a REST/JSON gateway at
+`api-des.iraqiairways.com.iq`. Card capture is handed off again, to **Amadeus
+Checkout** at `paypages.payment.amadeus.com`. Iraqi Airways publishes no
+third-party API — this is the engine's own traffic.
+
+Two hosts, two credentials:
+
+| Host | Auth | Notes |
+| ---- | ---- | ----- |
+| `api-des.iraqiairways.com.iq` | OAuth2 bearer + `x-d-token` | Behind Imperva |
+| `paypages.payment.amadeus.com` | `PPID` payment session only | No bearer |
+
+## The flow
+
+| Step | Operation | Status |
+| ---- | --------- | ------ |
+| 0. auth | `POST /v1/security/oauth2/token/initialization` | verified |
+| 1. search | `POST /v2/search/air-bounds` | verified |
+| 1b. fare strip | `POST /v2/search/air-calendars` | verified |
+| 2. pick flight | `POST /v2/shopping/carts` | unverified |
+| 2b. baggage quote | `GET /v2/shopping/baggage-policies` | verified |
+| 3. add traveler | `PUT /v2/shopping/carts/{cartId}/travelers` | unverified |
+| 3b. seats | `GET /v2/shopping/carts/{cartId}/air-offers/seat-maps` | unverified |
+| 3c. ancillaries | `POST /v2/shopping/carts/{cartId}/services` | unverified |
+| 4. purchase | `POST /v2/shopping/carts/{cartId}/purchase` | unverified |
+| 4b. retrieve | `GET /v2/booking/flight-orders/{orderId}` | unverified |
+| 5. pay / OTP | `POST /1ASIATP/ARIAPP/pay` | verified |
+
+**`verified`** means the path, headers, request body and response mapping are
+implemented and exercised in this repository — `src/services/ia.server.ts` and
+`src/services/amadeusPay.server.ts` are the source of truth for those five.
+
+**`unverified`** means the step exists in the UI flow and the path follows the
+Amadeus Digital Commerce convention, but it has not been confirmed against a
+live capture. Treat those as a template to reconcile, not as fact.
+
+## Filling in the unverified half
+
+The airline's hosts are blocked from the Claude Code remote sandbox by egress
+policy, so the live walkthrough has to happen on a machine that can reach them:
+
+```sh
+npx playwright install chromium     # first run only
+node scripts/capture-ia-api.mjs --headed
+```
+
+It opens the booking engine and hands you the browser. Click search → results →
+pick flight → travelers → payment yourself, stopping before you submit real card
+data, then press Enter. You get `capture/session.har`, `capture/calls.json`,
+`capture/summary.md` (an endpoint table to diff against this spec) and
+`capture/tokens.txt` (a fresh `IA_D_TOKEN`). Card fields are redacted from
+`calls.json`; the HAR is not redacted, so delete `capture/` when you are done.
+
+## Gotchas worth knowing before you integrate
+
+- **Dictionary compression.** Search responses reference flights and fare
+  families by id; the objects live under `dictionaries`. You must join.
+- **Scaled money.** Divide amounts by `10 ** dictionaries.currency[code].decimalPlaces`.
+  IQD is 0 decimal places — never assume 2.
+- **Empty results arrive as errors.** Error code `7959` ("NO FLIGHTS FOUND") is
+  a valid zero-inventory answer, not a transport failure.
+- **`flexibility` is outbound-only** on `air-calendars`; the gateway rejects it
+  on the return bound.
+- **`fact` is mandatory** on token minting, but `{}` is accepted.
+- **Durations are seconds**, not minutes.
+- **Travelers are a list, not counts** — one entry per passenger.
+- **Imperva 403s are HTML**, not JSON. Parse defensively, and re-capture
+  `x-d-token` from a browser when they start.
+- **Payment status is inconsistent.** Normalise across `status` / `state` /
+  `action`, and the reference across `reference` / `challenge.reference` /
+  `transactionId` / `paymentId`. Iraqi issuers challenge by default — treat an
+  unrecognised status as OTP-required, never as approved.
+- **Never log or persist PAN/CVV.** Forward straight to Amadeus.
+
+## Viewing the spec
+
+```sh
+npx @redocly/cli preview-docs docs/iraqi-airways-api/openapi.yaml
+```
+
+## Legal note
+
+These are private, unpublished APIs behind bot protection. Reverse-engineered
+access is not a supported integration and may breach the airline's terms —
+`src/services/iraqiAirways.ts` keeps a deep-link handoff as the supported path.
+Get a commercial agreement before shipping anything that depends on this.
