@@ -60,6 +60,46 @@ data, then press Enter. You get `capture/session.har`, `capture/calls.json`,
 `capture/tokens.txt` (a fresh `IA_D_TOKEN`). Card fields are redacted from
 `calls.json`; the HAR is not redacted, so delete `capture/` when you are done.
 
+## Running subhy against live inventory
+
+`flightService` is live-Iraqi-Airways-only — no simulated carriers are mixed in
+— so the results page shows its error state until the gateway answers. Three
+env vars make it answer:
+
+```sh
+export IA_D_TOKEN=...        # required; from capture/tokens.txt or DevTools
+export IA_CLIENT_ID=...      # booking SPA client id
+export IA_CLIENT_SECRET=...  # matching secret
+# or, instead of the client pair, a browser-lifted bearer (expires within the hour):
+# export IA_BEARER_TOKEN=...
+
+npm install
+npm run dev                  # http://localhost:8080
+```
+
+Confirm the credentials work before opening the app — this prints real offers
+straight from the gateway and fails loudly if the device token is stale:
+
+```sh
+node scripts/ia-search.mjs BGW DXB 2026-09-14
+```
+
+To get `IA_D_TOKEN` in the first place, run the capture harness and let it walk
+a real session; it writes the live token to `capture/tokens.txt`. Or grab it by
+hand from DevTools → Network → any `api-des` request → the `x-d-token` request
+header.
+
+The token dies with the browser session it came from. A `403`, or a non-JSON
+response body, means re-capture it.
+
+### If the install or dev server misbehaves
+
+- `bun install` may 403 against Lovable's private registry when you are not
+  authenticated to it. `npm install --registry https://registry.npmjs.org`
+  works from package.json and sidesteps the pinned lockfile URLs.
+- The dev server binds `::` by default. On an IPv4-only host that fails with
+  `EAFNOSUPPORT`; run `npm run dev -- --host 127.0.0.1 --port 8080`.
+
 ## Gotchas worth knowing before you integrate
 
 - **Dictionary compression.** Search responses reference flights and fare
