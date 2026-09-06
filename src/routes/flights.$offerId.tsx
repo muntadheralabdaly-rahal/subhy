@@ -28,6 +28,7 @@ import { formatDate, formatDuration, formatTime } from "@/lib/format";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/utils";
 import { flightService } from "@/services/flightService";
+import { baggageForOffer } from "@/lib/ia.functions";
 import type { BaggageAllowance } from "@/services/types";
 import { flightSearchSchema, paramsToSearch } from "@/services/searchParams";
 import { SERVICE_FEE, seatCount, setCart } from "@/services/store";
@@ -103,6 +104,19 @@ function Details() {
   });
 
   const offer = query.data;
+
+  // The airline quotes the real free allowance per fare family, but only for a
+  // bound sitting in a cart. Skip the round trip when the search response
+  // already advertised it.
+  const airBoundId = offer && !offer.baggage ? offer.providerRef : undefined;
+  const baggageQuery = useQuery({
+    queryKey: ["offer-baggage", airBoundId],
+    enabled: Boolean(airBoundId),
+    queryFn: () => baggageForOffer({ data: { airBoundId: airBoundId! } }),
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+  const baggage = offer?.baggage ?? baggageQuery.data?.baggage ?? undefined;
 
   function book() {
     if (!offer) return;
@@ -231,7 +245,11 @@ function Details() {
                       {p("أمتعة مسجّلة مجانية", "Free checked baggage", "بارى خۆڕایی")}
                     </p>
                     <p className="text-base text-text-tertiary">
-                      {allowanceText(offer.baggage?.checked, { type: "weight", quantity: offer.checkedBaggageKg, unit: "kilogram" })}
+                      {allowanceText(baggage?.checked, {
+                        type: "weight",
+                        quantity: offer.checkedBaggageKg,
+                        unit: "kilogram",
+                      })}
                     </p>
                   </div>
                 </div>
@@ -242,7 +260,11 @@ function Details() {
                       {p("أمتعة يد مجانية", "Free carry-on", "بارى دەست")}
                     </p>
                     <p className="text-base text-text-tertiary">
-                      {allowanceText(offer.baggage?.carryOn, { type: "weight", quantity: offer.cabinBaggageKg, unit: "kilogram" })}
+                      {allowanceText(baggage?.carryOn, {
+                        type: "weight",
+                        quantity: offer.cabinBaggageKg,
+                        unit: "kilogram",
+                      })}
                     </p>
                   </div>
                 </div>
@@ -262,9 +284,9 @@ function Details() {
                         ? p("قابل للاسترداد جزئيًا", "Partially refundable", "بەشێکی دەگەڕێتەوە")
                         : p("غير قابل للاسترداد", "Non-refundable", "ناگەڕێتەوە")}
                     </p>
-                    {offer.baggage?.regulations.length ? (
+                    {baggage?.regulations.length ? (
                       <p className="mt-1 text-xs text-text-placeholder" dir="ltr">
-                        {offer.baggage.regulations.join(" · ")}
+                        {baggage.regulations.join(" · ")}
                       </p>
                     ) : null}
                   </div>

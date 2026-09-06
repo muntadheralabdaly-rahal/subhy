@@ -213,6 +213,20 @@ type IaAirBound = {
   prices?: { totalPrices?: IaPrice[] };
 };
 
+export type IaFareService = {
+  type?: string;
+  code?: string;
+  bookingInstruction?: { text?: string };
+  allowance?: { quantity?: number; unit?: string; type?: string };
+};
+
+export type IaFareFamily = {
+  cabin?: string;
+  commercialFareFamily?: string;
+  fareFamilyName?: string;
+  services?: IaFareService[];
+};
+
 export type IaResponse = {
   data?: {
     airBoundGroups?: {
@@ -223,20 +237,7 @@ export type IaResponse = {
   dictionaries?: {
     flight?: Record<string, IaFlight>;
     currency?: Record<string, { decimalPlaces?: number }>;
-    fareFamilyWithServices?: Record<
-      string,
-      {
-        cabin?: string;
-        commercialFareFamily?: string;
-        fareFamilyName?: string;
-        services?: {
-          type?: string;
-          code?: string;
-          bookingInstruction?: { text?: string };
-          allowance?: { quantity?: number; unit?: string; type?: string };
-        }[];
-      }
-    >;
+    fareFamilyWithServices?: Record<string, IaFareFamily>;
   };
   errors?: { code: string; title: string; detail?: string }[];
 };
@@ -262,6 +263,70 @@ function mapCabin(raw: string | undefined, requested: Cabin): Cabin {
   if (v === "premium" || v === "premiumeco") return "PREMIUM_ECONOMY";
   if (v === "eco") return "ECONOMY";
   return requested;
+}
+
+/**
+ * Free allowance advertised alongside the fare family in the search response.
+ * It is not always present (short domestic bounds ship no `services` at all),
+ * in which case the detail screen falls back to the cart-based policy call.
+ */
+function serviceAllowance(
+  service: IaFareService,
+): BaggageAllowance | undefined {
+  const a = service.allowance;
+  if (typeof a?.quantity !== "number" || a.quantity <= 0) return undefined;
+  const unit = (a.unit ?? "").toUpperCase();
+  const kind = (a.type ?? "").toUpperCase();
+  const byWeight =
+    kind.startsWith("W") ||
+    unit.startsWith("K") ||
+    unit.startsWith("P") ||
+    unit.startsWith("L");
+  if (!byWeight) return { type: "piece", quantity: a.quantity };
+  return {
+    type: "weight",
+    quantity: a.quantity,
+    unit: unit.startsWith("P") || unit.startsWith("L") ? "pound" : "kilogram",
+  };
+}
+
+function serviceTag(service: IaFareService): string {
+  return `${service.type ?? ""} ${service.code ?? ""}`.toUpperCase();
+}
+
+function fareFamilyBaggage(
+  family: IaFareFamily | undefined,
+): BaggagePolicies | undefined {
+  let checked: BaggageAllowance | undefined;
+  let carryOn: BaggageAllowance | undefined;
+
+  for (const service of family?.services ?? []) {
+    const tag = serviceTag(service);
+    if (!tag.includes("BAG") && !tag.includes("BG")) continue;
+    const allowance = serviceAllowance(service);
+    if (!allowance) continue;
+    // Carry-on services are coded CBBG / CBG / "CABIN BAGGAGE"; everything
+    // else in the baggage family is the checked allowance.
+    const isCarryOn = ["CARRY", "CABIN", "HAND", "CBBG", "CBG"].some((h) =>
+      tag.includes(h),
+    );
+    if (isCarryOn) carryOn ??= allowance;
+    else checked ??= allowance;
+  }
+
+  if (!checked && !carryOn) return undefined;
+  return {
+    regulations: [],
+    ...(checked ? { checked } : {}),
+    ...(carryOn ? { carryOn } : {}),
+  };
+}
+
+function weightKg(allowance: BaggageAllowance | undefined): number | undefined {
+  if (allowance?.type !== "weight") return undefined;
+  return allowance.unit === "pound"
+    ? Math.round(allowance.quantity * 0.453592)
+    : allowance.quantity;
 }
 
 function minutesBetween(a: string, b: string) {
@@ -329,6 +394,7 @@ export function mapAirBoundsResponse(
         family?.fareFamilyName ??
         bound.fareFamilyCode ??
         family?.commercialFareFamily;
+      const baggage = fareFamilyBaggage(family);
       const durationMinutes = group.boundDetails?.duration
         ? Math.round(group.boundDetails.duration / 60)
         : minutesBetween(first.departAt, last.arriveAt);
@@ -344,8 +410,8 @@ export function mapAirBoundsResponse(
         durationMinutes,
         stops: Math.max(0, segments.length - 1),
         cabin,
-        checkedBaggageKg: business ? 40 : 30,
-        cabinBaggageKg: business ? 10 : 7,
+        checkedBaggageKg: weightKg(baggage?.checked) ?? (business ? 40 : 30),
+        cabinBaggageKg: weightKg(baggage?.carryOn) ?? (business ? 10 : 7),
         refundable: business,
         changeable: true,
         basePrice: base,
@@ -356,6 +422,7 @@ export function mapAirBoundsResponse(
         source: "IA_LIVE",
         providerRef: bound.airBoundId,
         ...(fareFamily ? { fareFamily } : {}),
+        ...(baggage ? { baggage } : {}),
       });
     }
   }
@@ -464,10 +531,36 @@ export type IaHealth = {
     code?: IaFailureCode;
     detail?: string;
   };
+  /** Cart + baggage-policies chain, probed with the first bound we find. */
+  baggage: {
+    ok: boolean;
+    checked?: string;
+    carryOn?: string;
+    code?: IaFailureCode;
+    detail?: string;
+  };
 };
+
+function allowanceLabel(a: BaggageAllowance | undefined): string | undefined {
+  if (!a) return undefined;
+  return a.type === "weight"
+    ? `${a.quantity} ${a.unit}`
+    : `${a.quantity} piece(s)`;
+}
 
 export async function iaHealthLive(search: FlightSearch): Promise<IaHealth> {
   const res = await searchIraqiAirwaysLive(search);
+  const airBoundId = res.ok ? res.value[0]?.providerRef : undefined;
+  const bags = airBoundId
+    ? await baggageForAirBoundLive(airBoundId)
+    : ({
+        ok: false,
+        failure: {
+          code: "UPSTREAM_ERROR" as const,
+          detail: "no bound to price a cart with",
+        },
+      } as const);
+
   return {
     base: process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq",
     env: {
@@ -484,6 +577,17 @@ export async function iaHealthLive(search: FlightSearch): Promise<IaHealth> {
       offers: res.ok ? res.value.length : 0,
       ...(res.ok ? {} : { code: res.failure.code, detail: res.failure.detail }),
     },
+    baggage: bags.ok
+      ? {
+          ok: true,
+          ...(allowanceLabel(bags.value.checked)
+            ? { checked: allowanceLabel(bags.value.checked)! }
+            : {}),
+          ...(allowanceLabel(bags.value.carryOn)
+            ? { carryOn: allowanceLabel(bags.value.carryOn)! }
+            : {}),
+        }
+      : { ok: false, code: bags.failure.code, detail: bags.failure.detail },
   };
 }
 
@@ -566,10 +670,11 @@ function mapAllowance(entry: IaAllowanceEntry | undefined): BaggageAllowance | u
   };
 }
 
-async function iaGet<T>(path: string): Promise<T | null> {
-  const base = process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq";
+async function iaGet<T>(path: string): Promise<IaOutcome<T>> {
+  const base =
+    process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq";
   const dToken = process.env["IA_D_TOKEN"];
-  if (!dToken) return null;
+  if (!dToken) return fail("NO_D_TOKEN", "IA_D_TOKEN is not set on the server");
 
   const call = async (bearer: string) => {
     const res = await fetch(`${base}${path}`, {
@@ -587,47 +692,126 @@ async function iaGet<T>(path: string): Promise<T | null> {
     });
     const text = await res.text();
     if (!res.ok) {
-      console.error(`[IA] GET ${path} failed [${res.status}]: ${text.slice(0, 200)}`);
-      return { data: null as T | null, status: res.status };
+      console.error(
+        `[IA] GET ${path} failed [${res.status}]: ${text.slice(0, 200)}`,
+      );
+      return {
+        data: null as T | null,
+        status: res.status,
+        detail: text.slice(0, 200),
+      };
     }
     try {
-      return { data: JSON.parse(text) as T, status: res.status };
+      return { data: JSON.parse(text) as T, status: res.status, detail: "" };
     } catch {
-      return { data: null as T | null, status: res.status };
+      return {
+        data: null as T | null,
+        status: res.status,
+        detail: "non-JSON body (Imperva challenge page)",
+      };
     }
   };
 
   try {
     const bearer = await accessToken(base);
-    if (!bearer) return null;
-    const first = await call(bearer);
-    if (first.data) return first.data;
-    if (first.status === 401) {
+    if (!bearer)
+      return fail(
+        "TOKEN_MINT_FAILED",
+        "the gateway refused to mint an access token",
+      );
+    let res = await call(bearer);
+    if (res.data) return { ok: true, value: res.data };
+    if (res.status === 401) {
       tokenCache = null;
       const refreshed = await accessToken(base, true);
-      if (refreshed) return (await call(refreshed)).data;
+      if (refreshed) {
+        res = await call(refreshed);
+        if (res.data) return { ok: true, value: res.data };
+      }
     }
-    return null;
+    if (res.status === 401 || res.status === 403) {
+      return fail(
+        "EDGE_BLOCKED",
+        `GET ${path} → ${res.status}. The Imperva device token (IA_D_TOKEN) is stale; capture a fresh one from a real browser session.`,
+      );
+    }
+    return fail("UPSTREAM_ERROR", `GET ${path} → ${res.status}: ${res.detail}`);
   } catch (error) {
-    console.error(`[IA] GET ${path} threw`, error);
-    return null;
+    return fail("NETWORK_ERROR", `GET ${path} threw: ${String(error)}`);
   }
 }
 
-/** Live free-baggage allowance for a priced cart. Null when unavailable. */
+/** Live free-baggage allowance for a priced cart. */
 export async function baggagePoliciesIraqiAirwaysLive(
   cartId: string,
   lang = "GB",
-): Promise<BaggagePolicies | null> {
-  const json = await iaGet<IaBaggagePoliciesResponse>(
+): Promise<IaOutcome<BaggagePolicies>> {
+  const res = await iaGet<IaBaggagePoliciesResponse>(
     `/v2/shopping/baggage-policies?cartId=${encodeURIComponent(cartId)}&lang=${encodeURIComponent(lang)}`,
   );
-  if (!json?.data || json.errors?.length) return null;
+  if (!res.ok) return res;
+  const json = res.value;
+  if (json.errors?.length) {
+    return fail(
+      "UPSTREAM_ERROR",
+      `baggage-policies errors: ${JSON.stringify(json.errors).slice(0, 300)}`,
+    );
+  }
+  if (!json.data)
+    return fail("UPSTREAM_ERROR", "baggage-policies returned no data");
+
   const checked = mapAllowance(json.data.freeCheckedBaggageAllowance?.[0]);
   const carryOn = mapAllowance(json.data.freeCarryOnAllowance?.[0]);
+  if (!checked && !carryOn) {
+    return fail(
+      "UPSTREAM_ERROR",
+      "baggage-policies returned no free allowance",
+    );
+  }
   return {
-    regulations: json.data.policyRegulations ?? [],
-    ...(checked ? { checked } : {}),
-    ...(carryOn ? { carryOn } : {}),
+    ok: true,
+    value: {
+      regulations: json.data.policyRegulations ?? [],
+      ...(checked ? { checked } : {}),
+      ...(carryOn ? { carryOn } : {}),
+    },
   };
+}
+
+type IaCartResponse = {
+  data?: { id?: string; cartId?: string };
+  errors?: { code: string; title: string; detail?: string }[];
+};
+
+/**
+ * baggage-policies is keyed on a cart, so a bound has to be put in one first.
+ * This is the airline's own shopping cart — the same call their site makes when
+ * a traveller picks a fare — not a hold on the seat.
+ */
+export async function createCartIraqiAirwaysLive(
+  airBoundId: string,
+): Promise<IaOutcome<string>> {
+  const res = await iaPost<IaCartResponse>("/v2/shopping/carts", {
+    airBoundId,
+  });
+  if (!res.ok) return res;
+  if (res.value.errors?.length) {
+    return fail(
+      "UPSTREAM_ERROR",
+      `carts errors: ${JSON.stringify(res.value.errors).slice(0, 300)}`,
+    );
+  }
+  const id = res.value.data?.id ?? res.value.data?.cartId;
+  if (!id) return fail("UPSTREAM_ERROR", "cart was created without an id");
+  return { ok: true, value: id };
+}
+
+/** Cart + policy lookup for one air bound, as the detail screen needs it. */
+export async function baggageForAirBoundLive(
+  airBoundId: string,
+  lang = "GB",
+): Promise<IaOutcome<BaggagePolicies>> {
+  const cart = await createCartIraqiAirwaysLive(airBoundId);
+  if (!cart.ok) return cart;
+  return baggagePoliciesIraqiAirwaysLive(cart.value, lang);
 }

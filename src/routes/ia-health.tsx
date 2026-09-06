@@ -134,6 +134,30 @@ function IaHealthPage() {
                 </p>
               ) : null}
             </div>
+            <div className={cn(cardShell, "p-5")}>
+              <p className="mb-3 text-xs font-bold uppercase text-text-placeholder">
+                Cart + baggage policies
+              </p>
+              <Row
+                label="Free allowance"
+                ok={health.data.baggage.ok}
+                value={
+                  health.data.baggage.ok
+                    ? [health.data.baggage.checked, health.data.baggage.carryOn]
+                        .filter(Boolean)
+                        .join(" · ") || "ok"
+                    : (health.data.baggage.code ?? "failed")
+                }
+              />
+              {health.data.baggage.detail ? (
+                <p
+                  className="mt-3 break-words text-xs text-text-placeholder"
+                  dir="ltr"
+                >
+                  {health.data.baggage.detail}
+                </p>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={() => health.refetch()}

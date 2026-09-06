@@ -53,11 +53,55 @@ export const fareCalendarIraqiAirways = createServerFn({ method: "POST" })
   });
 
 
+export type IaBaggageResponse = {
+  baggage: BaggagePolicies | null;
+  /** why the airline could not quote an allowance — only set when null */
+  failure?: { code: string; detail: string };
+};
+
 export const baggagePoliciesIraqiAirways = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) =>
-    z.object({ cartId: z.string().min(4).max(64), lang: z.string().max(4).optional() }).parse(input),
+    z
+      .object({
+        cartId: z.string().min(4).max(64),
+        lang: z.string().max(4).optional(),
+      })
+      .parse(input),
   )
-  .handler(async ({ data }): Promise<BaggagePolicies | null> => {
-    const { baggagePoliciesIraqiAirwaysLive } = await import("@/services/ia.server");
-    return baggagePoliciesIraqiAirwaysLive(data.cartId, data.lang ?? "GB");
+  .handler(async ({ data }): Promise<IaBaggageResponse> => {
+    const { baggagePoliciesIraqiAirwaysLive } = await import(
+      "@/services/ia.server"
+    );
+    const res = await baggagePoliciesIraqiAirwaysLive(
+      data.cartId,
+      data.lang ?? "GB",
+    );
+    return res.ok
+      ? { baggage: res.value }
+      : { baggage: null, failure: res.failure };
+  });
+
+/**
+ * Free allowance for one air bound: puts it in a cart, then reads the policy.
+ * Two upstream calls, so the detail screen only asks when the search response
+ * did not already advertise the allowance.
+ */
+export const baggageForOffer = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z
+      .object({
+        airBoundId: z.string().min(4).max(128),
+        lang: z.string().max(4).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }): Promise<IaBaggageResponse> => {
+    const { baggageForAirBoundLive } = await import("@/services/ia.server");
+    const res = await baggageForAirBoundLive(
+      data.airBoundId,
+      data.lang ?? "GB",
+    );
+    return res.ok
+      ? { baggage: res.value }
+      : { baggage: null, failure: res.failure };
   });

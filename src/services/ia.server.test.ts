@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import fixture from "./__fixtures__/ia-air-bounds-bgw-ebl.json";
-import { mapAirBoundsResponse, type IaResponse } from "./ia.server";
+import {
+  mapAirBoundsResponse,
+  type IaFareService,
+  type IaResponse,
+} from "./ia.server";
 import { airportHour, formatTime } from "@/lib/format";
 import type { FlightSearch } from "./types";
 
@@ -54,9 +58,75 @@ describe("mapAirBoundsResponse", () => {
     expect(offers[0]!.score).toBeGreaterThan(offers[1]!.score);
   });
 
+  test("falls back to the published allowance when the fare ships no services", () => {
+    // The BGW→EBL fixture carries no `services`, so the offer keeps Rahal's
+    // published economy numbers and the detail screen asks the cart-based
+    // policy endpoint instead.
+    expect(offers[0]!.baggage).toBeUndefined();
+    expect(offers[0]!.checkedBaggageKg).toBe(30);
+    expect(offers[0]!.cabinBaggageKg).toBe(7);
+  });
+
   test("shows Baghdad departure time whatever the viewer's timezone", () => {
     const departAt = offers[0]!.departAt;
     expect(airportHour(departAt)).toBe(18);
     expect(formatTime(departAt, "en")).toBe("18:30");
+  });
+});
+
+/**
+ * The `services` block is optional and absent from the captured response, so
+ * this exercises the parser against the shape the dictionary type declares:
+ * weight vs piece allowances, and carry-on told apart by its service code.
+ */
+describe("fare family allowances", () => {
+  function withServices(services: IaFareService[]) {
+    const json = structuredClone(fixture) as unknown as IaResponse;
+    const family = json.dictionaries?.fareFamilyWithServices?.["YGOLD"];
+    if (!family) throw new Error("fixture lost its YGOLD fare family");
+    family.services = services;
+    return mapAirBoundsResponse(json, search)[0]!;
+  }
+
+  test("reads checked weight and carry-on pieces off the fare family", () => {
+    const offer = withServices([
+      {
+        type: "BAGGAGE",
+        code: "BAG",
+        allowance: { quantity: 40, unit: "KG", type: "WEIGHT" },
+      },
+      {
+        type: "BAGGAGE",
+        code: "CBBG",
+        allowance: { quantity: 1, type: "PIECE" },
+      },
+      { type: "MEAL", code: "MEAL" },
+    ]);
+    expect(offer.baggage?.checked).toEqual({
+      type: "weight",
+      quantity: 40,
+      unit: "kilogram",
+    });
+    expect(offer.baggage?.carryOn).toEqual({ type: "piece", quantity: 1 });
+    // A weight allowance also corrects the number the results card shows.
+    expect(offer.checkedBaggageKg).toBe(40);
+    // A piece allowance cannot, so the published cabin figure stands.
+    expect(offer.cabinBaggageKg).toBe(7);
+  });
+
+  test("converts pounds to kilograms for the card figure", () => {
+    const offer = withServices([
+      {
+        type: "BAGGAGE",
+        code: "BAG",
+        allowance: { quantity: 50, unit: "POUND", type: "WEIGHT" },
+      },
+    ]);
+    expect(offer.baggage?.checked).toEqual({
+      type: "weight",
+      quantity: 50,
+      unit: "pound",
+    });
+    expect(offer.checkedBaggageKg).toBe(23);
   });
 });
