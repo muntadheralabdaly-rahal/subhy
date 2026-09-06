@@ -1,0 +1,89 @@
+{
+  "data": {
+    "airBoundGroups": [
+      {
+        "boundDetails": {
+          "originLocationCode": "BGW",
+          "destinationLocationCode": "EBL",
+          "duration": 3600,
+          "ranking": 2,
+          "segments": [{ "flightId": "SEG-IA943-BGWEBL-2026-09-09-1830" }]
+        },
+        "airBounds": [
+          {
+            "airBoundId": "BC1-1-1I1IAZ_X32WYY4BKZCXFDWCYRGK6JNXXL5K",
+            "fareFamilyCode": "YGOLD",
+            "isCheapestOffer": true,
+            "availabilityDetails": [
+              {
+                "flightId": "SEG-IA943-BGWEBL-2026-09-09-1830",
+                "cabin": "eco",
+                "bookingClass": "B",
+                "statusCode": "HK",
+                "quota": 9
+              }
+            ],
+            "prices": {
+              "totalPrices": [
+                {
+                  "base": 10032000,
+                  "total": 11220000,
+                  "currencyCode": "IQD",
+                  "totalTaxes": 1188000
+                }
+              ]
+            }
+          },
+          {
+            "airBoundId": "BC1-1-1I1IAZ_8WHP4YTF0XG8GGLE1YAY7I978OUC",
+            "fareFamilyCode": "YPLAT",
+            "availabilityDetails": [
+              {
+                "flightId": "SEG-IA943-BGWEBL-2026-09-09-1830",
+                "cabin": "eco",
+                "bookingClass": "Y",
+                "statusCode": "HK",
+                "quota": 9
+              }
+            ],
+            "prices": {
+              "totalPrices": [
+                {
+                  "base": 11220000,
+                  "total": 12408000,
+                  "currencyCode": "IQD",
+                  "totalTaxes": 1188000
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "meta": { "office": { "officeId": "BGWIA08IT" } },
+  "dictionaries": {
+    "airline": { "IA": "I A W" },
+    "aircraft": { "CRJ": "CANADAIR REGIONAL JET" },
+    "flight": {
+      "SEG-IA943-BGWEBL-2026-09-09-1830": {
+        "marketingAirlineCode": "IA",
+        "operatingAirlineCode": "IA",
+        "marketingFlightNumber": "943",
+        "departure": { "locationCode": "BGW", "dateTime": "2026-09-09T18:30:00.000+03:00" },
+        "arrival": { "locationCode": "EBL", "dateTime": "2026-09-09T19:30:00.000+03:00" },
+        "aircraftCode": "CRJ",
+        "duration": 3600,
+        "isOpenSegment": false,
+        "secureFlightIndicator": false
+      }
+    },
+    "currency": { "IQD": { "name": "IRAQI DINAR", "decimalPlaces": 2 } },
+    "anonymousTraveler": { "ADT-1": { "passengerTypeCode": "ADT" } },
+    "fareFamilyWithServices": {
+      "YPLAT": { "hierarchy": 9750, "commercialFareFamily": "ECO", "cabin": "eco" },
+      "YGOLD": { "hierarchy": 9800, "commercialFareFamily": "ECO", "cabin": "eco" }
+    },
+    "bookingStatus": { "HK": { "name": "Holding confirmed" } }
+  }
+}

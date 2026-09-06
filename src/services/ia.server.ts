@@ -213,7 +213,7 @@ type IaAirBound = {
   prices?: { totalPrices?: IaPrice[] };
 };
 
-type IaResponse = {
+export type IaResponse = {
   data?: {
     airBoundGroups?: {
       boundDetails?: { segments?: { flightId: string }[]; duration?: number };
@@ -268,7 +268,11 @@ function minutesBetween(a: string, b: string) {
   return Math.max(0, Math.round((+new Date(b) - +new Date(a)) / 60000));
 }
 
-function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
+/** Exported for the fixture test that pins us to a real gateway response. */
+export function mapAirBoundsResponse(
+  json: IaResponse,
+  search: FlightSearch,
+): FlightOffer[] {
   const flights = json.dictionaries?.flight ?? {};
   const families = json.dictionaries?.fareFamilyWithServices ?? {};
   const offers: FlightOffer[] = [];
@@ -301,8 +305,16 @@ function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
     if (!first || !last) continue;
 
     for (const bound of group.airBounds ?? []) {
-      const price = bound.prices?.totalPrices?.[0];
+      // totalPrices can carry several currencies; Rahal sells in IQD only.
+      const totals = bound.prices?.totalPrices ?? [];
+      const price = totals.find((p) => p.currencyCode === "IQD") ?? totals[0];
       if (!price) continue;
+      if (price.currencyCode !== "IQD") {
+        console.error(
+          `[IA] skipping bound ${bound.airBoundId}: priced in ${price.currencyCode}, not IQD`,
+        );
+        continue;
+      }
       const decimals = json.dictionaries?.currency?.[price.currencyCode]?.decimalPlaces ?? 0;
       const scale = 10 ** decimals;
       const base = Math.round(price.base / scale);
@@ -310,8 +322,13 @@ function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
       const family = families[bound.fareFamilyCode ?? ""];
       const cabin = mapCabin(family?.cabin ?? bound.availabilityDetails?.[0]?.cabin, search.cabin);
       const business = cabin === "BUSINESS" || cabin === "FIRST";
+      // The airline usually ships no fareFamilyName and one shared
+      // commercialFareFamily ("ECO") for every bound, so the branded code
+      // (YGOLD / YPLAT) is what actually tells two fares apart.
       const fareFamily =
-        family?.fareFamilyName ?? family?.commercialFareFamily ?? bound.fareFamilyCode;
+        family?.fareFamilyName ??
+        bound.fareFamilyCode ??
+        family?.commercialFareFamily;
       const durationMinutes = group.boundDetails?.duration
         ? Math.round(group.boundDetails.duration / 60)
         : minutesBetween(first.departAt, last.arriveAt);
@@ -394,7 +411,7 @@ async function airBounds(
     );
   }
 
-  return { ok: true, value: mapResponse(json, search) };
+  return { ok: true, value: mapAirBoundsResponse(json, search) };
 }
 
 /** Calls the airline availability API. */

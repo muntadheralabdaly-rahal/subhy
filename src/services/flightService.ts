@@ -1,4 +1,5 @@
 import { fareCalendarIraqiAirways, searchIraqiAirways } from "@/lib/ia.functions";
+import { airportHour } from "@/lib/format";
 import type { FareDay, FlightOffer, FlightSearch } from "./types";
 
 /**
@@ -76,7 +77,7 @@ export function totalPrice(offer: FlightOffer, seats = 1): number {
 }
 
 function windowOf(iso: string): string {
-  const h = new Date(iso).getHours();
+  const h = airportHour(iso);
   if (h < 6) return "night";
   if (h < 12) return "morning";
   if (h < 18) return "afternoon";
