@@ -20,15 +20,26 @@ export type IaSearchResponse = {
   offers: FlightOffer[];
   /** false when the airline session expired or the API refused the call */
   live: boolean;
+  /** why the call could not be served — only set when `live` is false */
+  failure?: { code: string; detail: string };
 };
 
 export const searchIraqiAirways = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => searchSchema.parse(input) as FlightSearch)
   .handler(async ({ data }): Promise<IaSearchResponse> => {
     const { searchIraqiAirwaysLive } = await import("@/services/ia.server");
-    const offers = await searchIraqiAirwaysLive(data);
-    if (!offers) throw new Error("Iraqi Airways live search is temporarily unavailable");
-    return { offers, live: true };
+    const res = await searchIraqiAirwaysLive(data);
+    // Reported, never thrown: a thrown server-function error reaches the
+    // browser as an opaque 500 and the results screen loses the reason.
+    if (!res.ok) return { offers: [], live: false, failure: res.failure };
+    return { offers: res.value, live: true };
+  });
+
+export const iaHealth = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => searchSchema.parse(input) as FlightSearch)
+  .handler(async ({ data }) => {
+    const { iaHealthLive } = await import("@/services/ia.server");
+    return iaHealthLive(data);
   });
 
 export type IaFareCalendarResponse = { days: FareDay[]; live: boolean };
@@ -42,11 +53,55 @@ export const fareCalendarIraqiAirways = createServerFn({ method: "POST" })
   });
 
 
+export type IaBaggageResponse = {
+  baggage: BaggagePolicies | null;
+  /** why the airline could not quote an allowance — only set when null */
+  failure?: { code: string; detail: string };
+};
+
 export const baggagePoliciesIraqiAirways = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) =>
-    z.object({ cartId: z.string().min(4).max(64), lang: z.string().max(4).optional() }).parse(input),
+    z
+      .object({
+        cartId: z.string().min(4).max(64),
+        lang: z.string().max(4).optional(),
+      })
+      .parse(input),
   )
-  .handler(async ({ data }): Promise<BaggagePolicies | null> => {
-    const { baggagePoliciesIraqiAirwaysLive } = await import("@/services/ia.server");
-    return baggagePoliciesIraqiAirwaysLive(data.cartId, data.lang ?? "GB");
+  .handler(async ({ data }): Promise<IaBaggageResponse> => {
+    const { baggagePoliciesIraqiAirwaysLive } = await import(
+      "@/services/ia.server"
+    );
+    const res = await baggagePoliciesIraqiAirwaysLive(
+      data.cartId,
+      data.lang ?? "GB",
+    );
+    return res.ok
+      ? { baggage: res.value }
+      : { baggage: null, failure: res.failure };
+  });
+
+/**
+ * Free allowance for one air bound: puts it in a cart, then reads the policy.
+ * Two upstream calls, so the detail screen only asks when the search response
+ * did not already advertise the allowance.
+ */
+export const baggageForOffer = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z
+      .object({
+        airBoundId: z.string().min(4).max(128),
+        lang: z.string().max(4).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }): Promise<IaBaggageResponse> => {
+    const { baggageForAirBoundLive } = await import("@/services/ia.server");
+    const res = await baggageForAirBoundLive(
+      data.airBoundId,
+      data.lang ?? "GB",
+    );
+    return res.ok
+      ? { baggage: res.value }
+      : { baggage: null, failure: res.failure };
   });

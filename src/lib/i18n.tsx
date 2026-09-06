@@ -193,6 +193,11 @@ export const dict = {
   loading: ["نجمع إلك أفضل الأسعار", "Finding the best fares", "باشترین نرخ دەدۆزینەوە"],
   empty_results: ["ماكو رحلات بهذا التاريخ", "No flights for this date", "گەشت نییە بۆ ئەم ڕۆژە"],
   empty_results_cta: ["جرّب تاريخ ثاني أو شيل بعض الفلاتر", "Try another date or clear filters", "ڕۆژێکی تر تاقی بکە"],
+  empty_results_ia: [
+    "ماكو مقاعد للخطوط العراقية على هذا الخط بهذا التاريخ. جرّب تاريخ ثاني.",
+    "Iraqi Airways has no seats on this route for this date. Try another date.",
+    "هێڵی عێراقی کورسی نییە لەم ڕێگایە بۆ ئەم ڕۆژە. ڕۆژێکی تر تاقی بکە.",
+  ],
   error_title: ["صارت مشكلة", "Something went wrong", "کێشەیەک ڕوویدا"],
   retry: ["جرّب مرة ثانية", "Try again", "دووبارە تاقی بکە"],
   soon: ["قريبًا", "Coming soon", "بەم زووانە"],

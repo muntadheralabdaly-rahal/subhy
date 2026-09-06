@@ -8,8 +8,8 @@
  *    memory until shortly before it expires. No manual refresh needed.
  *  - the Imperva device token (IA_D_TOKEN): rotates with a real browser
  *    session and must be refreshed by hand. When it goes stale the airline
- *    edge answers 403 and every call here returns null so the caller can fall
- *    back to the simulated engine instead of failing the page.
+ *    edge answers 403; every call here then reports an EDGE_BLOCKED failure
+ *    that the results screen shows verbatim instead of an empty list.
  */
 import type {
   BaggageAllowance,
@@ -86,7 +86,7 @@ async function postWithBearer<T>(
   body: unknown,
   dToken: string,
   bearer: string,
-): Promise<{ data: T | null; status: number }> {
+): Promise<{ data: T | null; status: number; detail: string }> {
   const res = await fetch(`${base}${path}`, {
     method: "POST",
     headers: {
@@ -105,38 +105,84 @@ async function postWithBearer<T>(
   const text = await res.text();
   if (!res.ok) {
     console.error(`[IA] ${path} failed [${res.status}]: ${text.slice(0, 200)}`);
-    return { data: null, status: res.status };
+    return { data: null, status: res.status, detail: text.slice(0, 200) };
   }
   try {
-    return { data: JSON.parse(text) as T, status: res.status };
+    return { data: JSON.parse(text) as T, status: res.status, detail: "" };
   } catch {
     console.error(`[IA] ${path} returned non-JSON (edge challenge)`);
-    return { data: null, status: res.status };
+    return {
+      data: null,
+      status: res.status,
+      detail: "non-JSON body (Imperva challenge page)",
+    };
   }
 }
 
-/** Shared transport for the airline gateway. Returns null on any failure. */
-async function iaPost<T>(path: string, body: unknown): Promise<T | null> {
-  const base = process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq";
+/**
+ * Why a live call could not be served. Surfaced all the way to the results
+ * screen so an empty page is never ambiguous: "no seats on this date" and
+ * "our airline credentials expired" look identical otherwise.
+ */
+export type IaFailureCode =
+  | "NO_D_TOKEN"
+  | "NO_CREDENTIALS"
+  | "TOKEN_MINT_FAILED"
+  | "EDGE_BLOCKED"
+  | "UPSTREAM_ERROR"
+  | "NETWORK_ERROR";
+
+export type IaFailure = { code: IaFailureCode; detail: string };
+export type IaOutcome<T> =
+  { ok: true; value: T } | { ok: false; failure: IaFailure };
+
+function fail(
+  code: IaFailureCode,
+  detail: string,
+): { ok: false; failure: IaFailure } {
+  console.error(`[IA] ${code}: ${detail}`);
+  return { ok: false, failure: { code, detail } };
+}
+
+/** Shared transport for the airline gateway. */
+async function iaPost<T>(path: string, body: unknown): Promise<IaOutcome<T>> {
+  const base =
+    process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq";
   const dToken = process.env["IA_D_TOKEN"];
-  if (!dToken) return null;
+  if (!dToken) return fail("NO_D_TOKEN", "IA_D_TOKEN is not set on the server");
+  if (!process.env["IA_CLIENT_ID"] && !process.env["IA_BEARER_TOKEN"]) {
+    return fail(
+      "NO_CREDENTIALS",
+      "neither IA_CLIENT_ID/IA_CLIENT_SECRET nor IA_BEARER_TOKEN is set",
+    );
+  }
   const bearer = await accessToken(base);
-  if (!bearer) return null;
+  if (!bearer)
+    return fail(
+      "TOKEN_MINT_FAILED",
+      "the gateway refused to mint an access token",
+    );
 
   try {
-    const first = await postWithBearer<T>(base, path, body, dToken, bearer);
-    if (first.data) return first.data;
-    if (first.status === 401) {
+    let res = await postWithBearer<T>(base, path, body, dToken, bearer);
+    if (res.data) return { ok: true, value: res.data };
+    if (res.status === 401) {
       tokenCache = null;
       const refreshed = await accessToken(base, true);
       if (refreshed) {
-        return (await postWithBearer<T>(base, path, body, dToken, refreshed)).data;
+        res = await postWithBearer<T>(base, path, body, dToken, refreshed);
+        if (res.data) return { ok: true, value: res.data };
       }
     }
-    return null;
+    if (res.status === 401 || res.status === 403) {
+      return fail(
+        "EDGE_BLOCKED",
+        `${path} → ${res.status}. The Imperva device token (IA_D_TOKEN) is stale; capture a fresh one from a real browser session.`,
+      );
+    }
+    return fail("UPSTREAM_ERROR", `${path} → ${res.status}: ${res.detail}`);
   } catch (error) {
-    console.error(`[IA] ${path} threw`, error);
-    return null;
+    return fail("NETWORK_ERROR", `${path} threw: ${String(error)}`);
   }
 }
 
@@ -167,7 +213,21 @@ type IaAirBound = {
   prices?: { totalPrices?: IaPrice[] };
 };
 
-type IaResponse = {
+export type IaFareService = {
+  type?: string;
+  code?: string;
+  bookingInstruction?: { text?: string };
+  allowance?: { quantity?: number; unit?: string; type?: string };
+};
+
+export type IaFareFamily = {
+  cabin?: string;
+  commercialFareFamily?: string;
+  fareFamilyName?: string;
+  services?: IaFareService[];
+};
+
+export type IaResponse = {
   data?: {
     airBoundGroups?: {
       boundDetails?: { segments?: { flightId: string }[]; duration?: number };
@@ -177,20 +237,7 @@ type IaResponse = {
   dictionaries?: {
     flight?: Record<string, IaFlight>;
     currency?: Record<string, { decimalPlaces?: number }>;
-    fareFamilyWithServices?: Record<
-      string,
-      {
-        cabin?: string;
-        commercialFareFamily?: string;
-        fareFamilyName?: string;
-        services?: {
-          type?: string;
-          code?: string;
-          bookingInstruction?: { text?: string };
-          allowance?: { quantity?: number; unit?: string; type?: string };
-        }[];
-      }
-    >;
+    fareFamilyWithServices?: Record<string, IaFareFamily>;
   };
   errors?: { code: string; title: string; detail?: string }[];
 };
@@ -218,11 +265,79 @@ function mapCabin(raw: string | undefined, requested: Cabin): Cabin {
   return requested;
 }
 
+/**
+ * Free allowance advertised alongside the fare family in the search response.
+ * It is not always present (short domestic bounds ship no `services` at all),
+ * in which case the detail screen falls back to the cart-based policy call.
+ */
+function serviceAllowance(
+  service: IaFareService,
+): BaggageAllowance | undefined {
+  const a = service.allowance;
+  if (typeof a?.quantity !== "number" || a.quantity <= 0) return undefined;
+  const unit = (a.unit ?? "").toUpperCase();
+  const kind = (a.type ?? "").toUpperCase();
+  const byWeight =
+    kind.startsWith("W") ||
+    unit.startsWith("K") ||
+    unit.startsWith("P") ||
+    unit.startsWith("L");
+  if (!byWeight) return { type: "piece", quantity: a.quantity };
+  return {
+    type: "weight",
+    quantity: a.quantity,
+    unit: unit.startsWith("P") || unit.startsWith("L") ? "pound" : "kilogram",
+  };
+}
+
+function serviceTag(service: IaFareService): string {
+  return `${service.type ?? ""} ${service.code ?? ""}`.toUpperCase();
+}
+
+function fareFamilyBaggage(
+  family: IaFareFamily | undefined,
+): BaggagePolicies | undefined {
+  let checked: BaggageAllowance | undefined;
+  let carryOn: BaggageAllowance | undefined;
+
+  for (const service of family?.services ?? []) {
+    const tag = serviceTag(service);
+    if (!tag.includes("BAG") && !tag.includes("BG")) continue;
+    const allowance = serviceAllowance(service);
+    if (!allowance) continue;
+    // Carry-on services are coded CBBG / CBG / "CABIN BAGGAGE"; everything
+    // else in the baggage family is the checked allowance.
+    const isCarryOn = ["CARRY", "CABIN", "HAND", "CBBG", "CBG"].some((h) =>
+      tag.includes(h),
+    );
+    if (isCarryOn) carryOn ??= allowance;
+    else checked ??= allowance;
+  }
+
+  if (!checked && !carryOn) return undefined;
+  return {
+    regulations: [],
+    ...(checked ? { checked } : {}),
+    ...(carryOn ? { carryOn } : {}),
+  };
+}
+
+function weightKg(allowance: BaggageAllowance | undefined): number | undefined {
+  if (allowance?.type !== "weight") return undefined;
+  return allowance.unit === "pound"
+    ? Math.round(allowance.quantity * 0.453592)
+    : allowance.quantity;
+}
+
 function minutesBetween(a: string, b: string) {
   return Math.max(0, Math.round((+new Date(b) - +new Date(a)) / 60000));
 }
 
-function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
+/** Exported for the fixture test that pins us to a real gateway response. */
+export function mapAirBoundsResponse(
+  json: IaResponse,
+  search: FlightSearch,
+): FlightOffer[] {
   const flights = json.dictionaries?.flight ?? {};
   const families = json.dictionaries?.fareFamilyWithServices ?? {};
   const offers: FlightOffer[] = [];
@@ -255,8 +370,16 @@ function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
     if (!first || !last) continue;
 
     for (const bound of group.airBounds ?? []) {
-      const price = bound.prices?.totalPrices?.[0];
+      // totalPrices can carry several currencies; Rahal sells in IQD only.
+      const totals = bound.prices?.totalPrices ?? [];
+      const price = totals.find((p) => p.currencyCode === "IQD") ?? totals[0];
       if (!price) continue;
+      if (price.currencyCode !== "IQD") {
+        console.error(
+          `[IA] skipping bound ${bound.airBoundId}: priced in ${price.currencyCode}, not IQD`,
+        );
+        continue;
+      }
       const decimals = json.dictionaries?.currency?.[price.currencyCode]?.decimalPlaces ?? 0;
       const scale = 10 ** decimals;
       const base = Math.round(price.base / scale);
@@ -264,8 +387,14 @@ function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
       const family = families[bound.fareFamilyCode ?? ""];
       const cabin = mapCabin(family?.cabin ?? bound.availabilityDetails?.[0]?.cabin, search.cabin);
       const business = cabin === "BUSINESS" || cabin === "FIRST";
+      // The airline usually ships no fareFamilyName and one shared
+      // commercialFareFamily ("ECO") for every bound, so the branded code
+      // (YGOLD / YPLAT) is what actually tells two fares apart.
       const fareFamily =
-        family?.fareFamilyName ?? family?.commercialFareFamily ?? bound.fareFamilyCode;
+        family?.fareFamilyName ??
+        bound.fareFamilyCode ??
+        family?.commercialFareFamily;
+      const baggage = fareFamilyBaggage(family);
       const durationMinutes = group.boundDetails?.duration
         ? Math.round(group.boundDetails.duration / 60)
         : minutesBetween(first.departAt, last.arriveAt);
@@ -281,8 +410,8 @@ function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
         durationMinutes,
         stops: Math.max(0, segments.length - 1),
         cabin,
-        checkedBaggageKg: business ? 40 : 30,
-        cabinBaggageKg: business ? 10 : 7,
+        checkedBaggageKg: weightKg(baggage?.checked) ?? (business ? 40 : 30),
+        cabinBaggageKg: weightKg(baggage?.carryOn) ?? (business ? 10 : 7),
         refundable: business,
         changeable: true,
         basePrice: base,
@@ -293,6 +422,7 @@ function mapResponse(json: IaResponse, search: FlightSearch): FlightOffer[] {
         source: "IA_LIVE",
         providerRef: bound.airBoundId,
         ...(fareFamily ? { fareFamily } : {}),
+        ...(baggage ? { baggage } : {}),
       });
     }
   }
@@ -321,32 +451,144 @@ function itinerariesPayload(search: FlightSearch) {
   ];
 }
 
-/** Calls the airline availability API. Returns null when it is unavailable. */
-export async function searchIraqiAirwaysLive(
+async function airBounds(
   search: FlightSearch,
-): Promise<FlightOffer[] | null> {
-  const json = await iaPost<IaResponse>("/v2/search/air-bounds", {
-    commercialFareFamilies: [CABIN_FAMILY[search.cabin]],
+  fareFamily: string | null,
+): Promise<IaOutcome<FlightOffer[]>> {
+  const res = await iaPost<IaResponse>("/v2/search/air-bounds", {
+    ...(fareFamily ? { commercialFareFamilies: [fareFamily] } : {}),
     itineraries: itinerariesPayload(search),
     travelers: travelerPayload(search),
     searchPreferences: { showMilesPrice: false },
   });
-  if (!json) return null;
+  if (!res.ok) return res;
+  const json = res.value;
 
   if (json.errors?.length) {
     // NO FLIGHTS FOUND is a valid empty result, not a transport failure.
-    const noFlights = json.errors.some((e) => e.code === "7959");
-    if (noFlights) {
+    if (json.errors.some((e) => e.code === "7959")) {
       console.info(
-        `[IA] no inventory for ${search.from}-${search.to} on ${search.departDate}: ${JSON.stringify(json.errors).slice(0, 300)}`,
+        `[IA] no inventory for ${search.from}-${search.to} on ${search.departDate} (fareFamily=${fareFamily ?? "any"})`,
       );
-      return [];
+      return { ok: true, value: [] };
     }
-    console.error(`[IA] provider errors: ${JSON.stringify(json.errors).slice(0, 300)}`);
-    return null;
+    return fail(
+      "UPSTREAM_ERROR",
+      `air-bounds errors: ${JSON.stringify(json.errors).slice(0, 300)}`,
+    );
   }
 
-  return mapResponse(json, search);
+  return { ok: true, value: mapAirBoundsResponse(json, search) };
+}
+
+/** Calls the airline availability API. */
+export async function searchIraqiAirwaysLive(
+  search: FlightSearch,
+): Promise<IaOutcome<FlightOffer[]>> {
+  const family = CABIN_FAMILY[search.cabin];
+  const filtered = await airBounds(search, family);
+  // A wrong/renamed commercial fare family silently yields zero bounds, which
+  // is indistinguishable from a sold-out date. Retry unfiltered before we tell
+  // the traveller there is nothing to fly.
+  if (filtered.ok && filtered.value.length === 0) {
+    const unfiltered = await airBounds(search, null);
+    if (unfiltered.ok) {
+      // Keep the cabin the traveller actually asked for; an unfiltered call
+      // also returns the other cabin's bounds.
+      const wanted = unfiltered.value.filter(
+        (o) => CABIN_FAMILY[o.cabin] === family,
+      );
+      if (wanted.length > 0) {
+        console.info(
+          `[IA] fare family "${family}" returned nothing; unfiltered search recovered ${wanted.length} bound(s)`,
+        );
+        return { ok: true, value: wanted };
+      }
+    }
+  }
+  return filtered;
+}
+
+/**
+ * One-shot credential/connectivity probe for the airline gateway, used by the
+ * /ia-health page so a blank results screen can be told apart from expired
+ * credentials without reading server logs.
+ */
+export type IaHealth = {
+  base: string;
+  env: {
+    clientId: boolean;
+    clientSecret: boolean;
+    dToken: boolean;
+    bearerToken: boolean;
+  };
+  probe: {
+    from: string;
+    to: string;
+    date: string;
+    ok: boolean;
+    offers: number;
+    code?: IaFailureCode;
+    detail?: string;
+  };
+  /** Cart + baggage-policies chain, probed with the first bound we find. */
+  baggage: {
+    ok: boolean;
+    checked?: string;
+    carryOn?: string;
+    code?: IaFailureCode;
+    detail?: string;
+  };
+};
+
+function allowanceLabel(a: BaggageAllowance | undefined): string | undefined {
+  if (!a) return undefined;
+  return a.type === "weight"
+    ? `${a.quantity} ${a.unit}`
+    : `${a.quantity} piece(s)`;
+}
+
+export async function iaHealthLive(search: FlightSearch): Promise<IaHealth> {
+  const res = await searchIraqiAirwaysLive(search);
+  const airBoundId = res.ok ? res.value[0]?.providerRef : undefined;
+  const bags = airBoundId
+    ? await baggageForAirBoundLive(airBoundId)
+    : ({
+        ok: false,
+        failure: {
+          code: "UPSTREAM_ERROR" as const,
+          detail: "no bound to price a cart with",
+        },
+      } as const);
+
+  return {
+    base: process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq",
+    env: {
+      clientId: Boolean(process.env["IA_CLIENT_ID"]),
+      clientSecret: Boolean(process.env["IA_CLIENT_SECRET"]),
+      dToken: Boolean(process.env["IA_D_TOKEN"]),
+      bearerToken: Boolean(process.env["IA_BEARER_TOKEN"]),
+    },
+    probe: {
+      from: search.from,
+      to: search.to,
+      date: search.departDate,
+      ok: res.ok,
+      offers: res.ok ? res.value.length : 0,
+      ...(res.ok ? {} : { code: res.failure.code, detail: res.failure.detail }),
+    },
+    baggage: bags.ok
+      ? {
+          ok: true,
+          ...(allowanceLabel(bags.value.checked)
+            ? { checked: allowanceLabel(bags.value.checked)! }
+            : {}),
+          ...(allowanceLabel(bags.value.carryOn)
+            ? { carryOn: allowanceLabel(bags.value.carryOn)! }
+            : {}),
+        }
+      : { ok: false, code: bags.failure.code, detail: bags.failure.detail },
+  };
 }
 
 type IaCalendarResponse = {
@@ -369,7 +611,7 @@ export async function fareCalendarIraqiAirwaysLive(
   search: FlightSearch,
   flexibility = 3,
 ): Promise<FareDay[] | null> {
-  const json = await iaPost<IaCalendarResponse>("/v2/search/air-calendars", {
+  const res = await iaPost<IaCalendarResponse>("/v2/search/air-calendars", {
     commercialFareFamilies: [CABIN_FAMILY[search.cabin]],
     // The gateway rejects `flexibility` on the non-requested (return) bound.
     itineraries: itinerariesPayload(search).map((it) =>
@@ -378,7 +620,9 @@ export async function fareCalendarIraqiAirwaysLive(
     travelers: travelerPayload(search),
     searchPreferences: { showMilesPrice: false },
   });
-  if (!json || json.errors?.length) return null;
+  if (!res.ok) return null;
+  const json = res.value;
+  if (json.errors?.length) return null;
 
   const days: FareDay[] = [];
   for (const entry of json.data?.airCalendars ?? []) {
@@ -426,10 +670,11 @@ function mapAllowance(entry: IaAllowanceEntry | undefined): BaggageAllowance | u
   };
 }
 
-async function iaGet<T>(path: string): Promise<T | null> {
-  const base = process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq";
+async function iaGet<T>(path: string): Promise<IaOutcome<T>> {
+  const base =
+    process.env["IA_API_BASE"] ?? "https://api-des.iraqiairways.com.iq";
   const dToken = process.env["IA_D_TOKEN"];
-  if (!dToken) return null;
+  if (!dToken) return fail("NO_D_TOKEN", "IA_D_TOKEN is not set on the server");
 
   const call = async (bearer: string) => {
     const res = await fetch(`${base}${path}`, {
@@ -447,47 +692,126 @@ async function iaGet<T>(path: string): Promise<T | null> {
     });
     const text = await res.text();
     if (!res.ok) {
-      console.error(`[IA] GET ${path} failed [${res.status}]: ${text.slice(0, 200)}`);
-      return { data: null as T | null, status: res.status };
+      console.error(
+        `[IA] GET ${path} failed [${res.status}]: ${text.slice(0, 200)}`,
+      );
+      return {
+        data: null as T | null,
+        status: res.status,
+        detail: text.slice(0, 200),
+      };
     }
     try {
-      return { data: JSON.parse(text) as T, status: res.status };
+      return { data: JSON.parse(text) as T, status: res.status, detail: "" };
     } catch {
-      return { data: null as T | null, status: res.status };
+      return {
+        data: null as T | null,
+        status: res.status,
+        detail: "non-JSON body (Imperva challenge page)",
+      };
     }
   };
 
   try {
     const bearer = await accessToken(base);
-    if (!bearer) return null;
-    const first = await call(bearer);
-    if (first.data) return first.data;
-    if (first.status === 401) {
+    if (!bearer)
+      return fail(
+        "TOKEN_MINT_FAILED",
+        "the gateway refused to mint an access token",
+      );
+    let res = await call(bearer);
+    if (res.data) return { ok: true, value: res.data };
+    if (res.status === 401) {
       tokenCache = null;
       const refreshed = await accessToken(base, true);
-      if (refreshed) return (await call(refreshed)).data;
+      if (refreshed) {
+        res = await call(refreshed);
+        if (res.data) return { ok: true, value: res.data };
+      }
     }
-    return null;
+    if (res.status === 401 || res.status === 403) {
+      return fail(
+        "EDGE_BLOCKED",
+        `GET ${path} → ${res.status}. The Imperva device token (IA_D_TOKEN) is stale; capture a fresh one from a real browser session.`,
+      );
+    }
+    return fail("UPSTREAM_ERROR", `GET ${path} → ${res.status}: ${res.detail}`);
   } catch (error) {
-    console.error(`[IA] GET ${path} threw`, error);
-    return null;
+    return fail("NETWORK_ERROR", `GET ${path} threw: ${String(error)}`);
   }
 }
 
-/** Live free-baggage allowance for a priced cart. Null when unavailable. */
+/** Live free-baggage allowance for a priced cart. */
 export async function baggagePoliciesIraqiAirwaysLive(
   cartId: string,
   lang = "GB",
-): Promise<BaggagePolicies | null> {
-  const json = await iaGet<IaBaggagePoliciesResponse>(
+): Promise<IaOutcome<BaggagePolicies>> {
+  const res = await iaGet<IaBaggagePoliciesResponse>(
     `/v2/shopping/baggage-policies?cartId=${encodeURIComponent(cartId)}&lang=${encodeURIComponent(lang)}`,
   );
-  if (!json?.data || json.errors?.length) return null;
+  if (!res.ok) return res;
+  const json = res.value;
+  if (json.errors?.length) {
+    return fail(
+      "UPSTREAM_ERROR",
+      `baggage-policies errors: ${JSON.stringify(json.errors).slice(0, 300)}`,
+    );
+  }
+  if (!json.data)
+    return fail("UPSTREAM_ERROR", "baggage-policies returned no data");
+
   const checked = mapAllowance(json.data.freeCheckedBaggageAllowance?.[0]);
   const carryOn = mapAllowance(json.data.freeCarryOnAllowance?.[0]);
+  if (!checked && !carryOn) {
+    return fail(
+      "UPSTREAM_ERROR",
+      "baggage-policies returned no free allowance",
+    );
+  }
   return {
-    regulations: json.data.policyRegulations ?? [],
-    ...(checked ? { checked } : {}),
-    ...(carryOn ? { carryOn } : {}),
+    ok: true,
+    value: {
+      regulations: json.data.policyRegulations ?? [],
+      ...(checked ? { checked } : {}),
+      ...(carryOn ? { carryOn } : {}),
+    },
   };
+}
+
+type IaCartResponse = {
+  data?: { id?: string; cartId?: string };
+  errors?: { code: string; title: string; detail?: string }[];
+};
+
+/**
+ * baggage-policies is keyed on a cart, so a bound has to be put in one first.
+ * This is the airline's own shopping cart — the same call their site makes when
+ * a traveller picks a fare — not a hold on the seat.
+ */
+export async function createCartIraqiAirwaysLive(
+  airBoundId: string,
+): Promise<IaOutcome<string>> {
+  const res = await iaPost<IaCartResponse>("/v2/shopping/carts", {
+    airBoundId,
+  });
+  if (!res.ok) return res;
+  if (res.value.errors?.length) {
+    return fail(
+      "UPSTREAM_ERROR",
+      `carts errors: ${JSON.stringify(res.value.errors).slice(0, 300)}`,
+    );
+  }
+  const id = res.value.data?.id ?? res.value.data?.cartId;
+  if (!id) return fail("UPSTREAM_ERROR", "cart was created without an id");
+  return { ok: true, value: id };
+}
+
+/** Cart + policy lookup for one air bound, as the detail screen needs it. */
+export async function baggageForAirBoundLive(
+  airBoundId: string,
+  lang = "GB",
+): Promise<IaOutcome<BaggagePolicies>> {
+  const cart = await createCartIraqiAirwaysLive(airBoundId);
+  if (!cart.ok) return cart;
+  return baggagePoliciesIraqiAirwaysLive(cart.value, lang);
 }

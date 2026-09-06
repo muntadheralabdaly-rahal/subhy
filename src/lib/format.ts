@@ -24,12 +24,36 @@ export function formatMoney(value: number, lang: Lang, currency = "IQD"): string
   return `${formatNumber(value, lang)} ${currencySuffix(currency, lang)}`;
 }
 
+/**
+ * The airline stamps every timestamp with the airport's own offset
+ * ("2026-09-09T18:30:00.000+03:00" for a Baghdad departure). Travellers read
+ * schedules in airport-local time, so render the wall clock carried in the
+ * string instead of letting the viewer's (or the server's) timezone shift it.
+ * Date-only strings land at midday for the same reason: no day can slip.
+ */
+function wallClock(iso: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(iso);
+  if (!m) return new Date(iso);
+  return new Date(
+    Number(m[1]),
+    Number(m[2]) - 1,
+    Number(m[3]),
+    Number(m[4] ?? "12"),
+    Number(m[5] ?? "0"),
+  );
+}
+
+/** Departure hour at the airport, for time-of-day filters. */
+export function airportHour(iso: string): number {
+  return wallClock(iso).getHours();
+}
+
 export function formatDate(iso: string, lang: Lang): string {
   return new Intl.DateTimeFormat(localeOf(lang), {
     day: "numeric",
     month: "short",
     year: "numeric",
-  }).format(new Date(iso));
+  }).format(wallClock(iso));
 }
 
 export function formatDayShort(iso: string, lang: Lang): string {
@@ -37,7 +61,7 @@ export function formatDayShort(iso: string, lang: Lang): string {
     weekday: "short",
     day: "numeric",
     month: "short",
-  }).format(new Date(iso));
+  }).format(wallClock(iso));
 }
 
 export function formatTime(iso: string, lang: Lang): string {
@@ -45,7 +69,7 @@ export function formatTime(iso: string, lang: Lang): string {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  }).format(new Date(iso));
+  }).format(wallClock(iso));
 }
 
 export function formatDuration(minutes: number, lang: Lang): string {

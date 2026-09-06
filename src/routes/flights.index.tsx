@@ -325,11 +325,18 @@ function Results() {
                 <CardSkeleton />
               </div>
             ) : offersQuery.isError ? (
-              <ErrorState onRetry={() => offersQuery.refetch()} />
+              <ErrorState
+                onRetry={() => offersQuery.refetch()}
+                {...(offersQuery.error instanceof Error
+                  ? { message: offersQuery.error.message }
+                  : {})}
+              />
             ) : visible.length === 0 ? (
               <EmptyState
                 title={t("empty_results")}
-                description={t("empty_results_cta")}
+                description={
+                  offers.length > 0 ? t("empty_results_cta") : t("empty_results_ia")
+                }
                 actionLabel={t("reset")}
                 onAction={() => setFilters({ ...emptyFilters })}
               />
