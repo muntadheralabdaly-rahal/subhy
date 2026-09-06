@@ -20,15 +20,26 @@ export type IaSearchResponse = {
   offers: FlightOffer[];
   /** false when the airline session expired or the API refused the call */
   live: boolean;
+  /** why the call could not be served — only set when `live` is false */
+  failure?: { code: string; detail: string };
 };
 
 export const searchIraqiAirways = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => searchSchema.parse(input) as FlightSearch)
   .handler(async ({ data }): Promise<IaSearchResponse> => {
     const { searchIraqiAirwaysLive } = await import("@/services/ia.server");
-    const offers = await searchIraqiAirwaysLive(data);
-    if (!offers) throw new Error("Iraqi Airways live search is temporarily unavailable");
-    return { offers, live: true };
+    const res = await searchIraqiAirwaysLive(data);
+    // Reported, never thrown: a thrown server-function error reaches the
+    // browser as an opaque 500 and the results screen loses the reason.
+    if (!res.ok) return { offers: [], live: false, failure: res.failure };
+    return { offers: res.value, live: true };
+  });
+
+export const iaHealth = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => searchSchema.parse(input) as FlightSearch)
+  .handler(async ({ data }) => {
+    const { iaHealthLive } = await import("@/services/ia.server");
+    return iaHealthLive(data);
   });
 
 export type IaFareCalendarResponse = { days: FareDay[]; live: boolean };

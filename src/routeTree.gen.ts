@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as BookingsRouteImport } from './routes/bookings'
 import { Route as HotelsRouteImport } from './routes/hotels'
+import { Route as IaHealthRouteImport } from './routes/ia-health'
 import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as ProfileRouteImport } from './routes/profile'
 import { Route as SupportRouteImport } from './routes/support'
@@ -36,6 +37,11 @@ const BookingsRoute = BookingsRouteImport.update({
 const HotelsRoute = HotelsRouteImport.update({
   id: '/hotels',
   path: '/hotels',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IaHealthRoute = IaHealthRouteImport.update({
+  id: '/ia-health',
+  path: '/ia-health',
   getParentRoute: () => rootRouteImport,
 } as any)
 const NotificationsRoute = NotificationsRouteImport.update({
@@ -94,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/bookings': typeof BookingsRouteWithChildren
   '/hotels': typeof HotelsRoute
+  '/ia-health': typeof IaHealthRoute
   '/notifications': typeof NotificationsRoute
   '/profile': typeof ProfileRoute
   '/support': typeof SupportRoute
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/bookings': typeof BookingsRouteWithChildren
   '/hotels': typeof HotelsRoute
+  '/ia-health': typeof IaHealthRoute
   '/notifications': typeof NotificationsRoute
   '/profile': typeof ProfileRoute
   '/support': typeof SupportRoute
@@ -125,6 +133,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/bookings': typeof BookingsRouteWithChildren
   '/hotels': typeof HotelsRoute
+  '/ia-health': typeof IaHealthRoute
   '/notifications': typeof NotificationsRoute
   '/profile': typeof ProfileRoute
   '/support': typeof SupportRoute
@@ -142,6 +151,7 @@ export interface FileRouteTypes {
     | '/'
     | '/bookings'
     | '/hotels'
+    | '/ia-health'
     | '/notifications'
     | '/profile'
     | '/support'
@@ -157,6 +167,7 @@ export interface FileRouteTypes {
     | '/'
     | '/bookings'
     | '/hotels'
+    | '/ia-health'
     | '/notifications'
     | '/profile'
     | '/support'
@@ -172,6 +183,7 @@ export interface FileRouteTypes {
     | '/'
     | '/bookings'
     | '/hotels'
+    | '/ia-health'
     | '/notifications'
     | '/profile'
     | '/support'
@@ -188,6 +200,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BookingsRoute: typeof BookingsRouteWithChildren
   HotelsRoute: typeof HotelsRoute
+  IaHealthRoute: typeof IaHealthRoute
   NotificationsRoute: typeof NotificationsRoute
   ProfileRoute: typeof ProfileRoute
   SupportRoute: typeof SupportRoute
@@ -220,6 +233,13 @@ declare module '@tanstack/react-router' {
       path: '/hotels'
       fullPath: '/hotels'
       preLoaderRoute: typeof HotelsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ia-health': {
+      id: '/ia-health'
+      path: '/ia-health'
+      fullPath: '/ia-health'
+      preLoaderRoute: typeof IaHealthRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/notifications': {
@@ -311,6 +331,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BookingsRoute: BookingsRouteWithChildren,
   HotelsRoute: HotelsRoute,
+  IaHealthRoute: IaHealthRoute,
   NotificationsRoute: NotificationsRoute,
   ProfileRoute: ProfileRoute,
   SupportRoute: SupportRoute,

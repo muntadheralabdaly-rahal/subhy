@@ -31,9 +31,24 @@ export const emptyFilters: FlightFilters = {
 async function collectOffers(search: FlightSearch): Promise<FlightOffer[]> {
   const res = await searchIraqiAirways({ data: search });
   if (!res.live) {
-    throw new Error("Iraqi Airways live search is temporarily unavailable");
+    const f = res.failure;
+    throw new Error(
+      f
+        ? `Iraqi Airways live search unavailable [${f.code}]: ${f.detail}`
+        : "Iraqi Airways live search is temporarily unavailable",
+    );
   }
-  return res.offers.filter((o) => o.airline === "IA");
+  // The gateway can return interline/codeshare bounds; only IA-marketed
+  // inventory is bookable through Rahal today.
+  const own = res.offers.filter((o) => o.airline === "IA");
+  if (res.offers.length > 0 && own.length === 0) {
+    console.warn(
+      `[IA] dropped ${res.offers.length} offer(s) with non-IA marketing codes: ${[
+        ...new Set(res.offers.map((o) => o.airline)),
+      ].join(", ")}`,
+    );
+  }
+  return own;
 }
 
 export const flightService = {
